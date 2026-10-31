@@ -86,7 +86,11 @@ object Downloads {
                 permits.withPermit {
                     if (file(track.id) == null) {
                         // One retry: a refused url is rejected in fetch, so the second run takes the next source.
-                        try { fetch(track) } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (e: Exception) { fetch(track) }
+                        try { fetch(track) } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (e: Exception) {
+                            // Second source: YouTube (and its other clients) failed, so go straight to JioSaavn.
+                            if (com.k4music.desktop.prefs.Settings.smartFallback && !track.isSaavn) com.k4music.desktop.k4.StreamFallback.force(track.id)
+                            fetch(track)
+                        }
                     } else _done.update { it + track.id }
                 }
             } catch (e: kotlinx.coroutines.CancellationException) {

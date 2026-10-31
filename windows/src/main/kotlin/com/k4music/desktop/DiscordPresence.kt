@@ -54,9 +54,17 @@ object DiscordPresence {
                     AppLog.w("Discord", "Presence update failed: ${e.message}")
                     disconnect()
                 }
-                // Idle when the feature is off or nothing plays: a slower check costs nothing noticeable.
-                val active = Settings.discordPresence && player.state.value.playing
-                delay(if (active) 3_000 else 10_000)
+                // Discord opened after K4 Audio (or restarted): keep looking every few seconds and start the
+                // status the moment its pipe appears. Opening a missing pipe costs microseconds.
+                val wanted = Settings.discordPresence
+                delay(
+                    when {
+                        !wanted -> 15_000
+                        pipe == null -> 4_000
+                        player.state.value.playing -> 3_000
+                        else -> 8_000
+                    }
+                )
             }
         }
     }
@@ -164,6 +172,7 @@ object DiscordPresence {
             if (ok) {
                 pipe = p
                 sent = null // Force immediate re-announcement of active song
+                sentAt = 0L
                 AppLog.i("Discord", "Connected to Discord on pipe discord-ipc-$i")
                 return p
             }

@@ -113,12 +113,12 @@ fun main(args: Array<String>) {
     }
     devMode(args, player)
     QueueStore.attach(player)
-    // A little after start, then every hour while running: offer a new version (each version is offered once).
+    // A few seconds after start, then every hour while running (at most every 6 hours against GitHub): offer a new version (each version is offered once).
     // A failed check (offline, GitHub down) is not counted as done, so it is tried again soon.
     if (!devCheck) kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch {
-        kotlinx.coroutines.delay(20_000)
+        kotlinx.coroutines.delay(8_000)
         while (true) {
-            if (System.currentTimeMillis() - Settings.updateCheckedAt >= 20 * 60 * 60 * 1000L) {
+            if (System.currentTimeMillis() - Settings.updateCheckedAt >= 6 * 60 * 60 * 1000L) {
                 runCatching { Updater.check() }.onSuccess { update ->
                     Settings.updateCheckedAt = System.currentTimeMillis()
                     if (update != null && update.version != Settings.updateOfferedVersion && com.k4music.desktop.ui.AppDialogs.current == null) {

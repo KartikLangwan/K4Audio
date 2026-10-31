@@ -373,10 +373,7 @@ class PlayerService : InvincibleService(), Player.Listener, PlaybackStatsListene
 
         maybeResumePlaybackWhenDeviceConnected()
 
-        coroutineScope.launch(Dispatchers.IO) {
-            delay(PYTHON_WARM_UP_DELAY_MS) // after launch work settles
-            runCatching { Dependencies.warmUp() }.onFailure { Log.w(TAG, "yt-dlp warm-up failed", it) }
-        }
+        // Python and yt-dlp start only when a song needs them (about 100 MB of memory is not spent up front).
 
         preferenceUpdaterJob = coroutineScope.launch {
             fun <T : Any> subscribe(
@@ -1401,7 +1398,6 @@ class PlayerService : InvincibleService(), Player.Listener, PlaybackStatsListene
         private const val DEFAULT_CHUNK_LENGTH = 512 * 1024L
         private const val YT_DLP_TIMEOUT_MS = 15_000L
         private const val RECOVERY_DELAY_MS = 300L
-        private const val PYTHON_WARM_UP_DELAY_MS = 8_000L
         private val ytDlpScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
         /** yt-dlp errors that mean "YouTube is refusing this network", not "this song is unavailable". */

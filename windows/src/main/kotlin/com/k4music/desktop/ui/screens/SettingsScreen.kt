@@ -649,9 +649,16 @@ private fun TransferSection() = Section(Res.string.desktop_transfer_title) {
     Text(stringResource(Res.string.desktop_transfer_description), style = MaterialTheme.typography.bodySmall, color = secondary)
     when (val st = state) {
         is com.k4music.desktop.data.PhoneTransfer.State.Waiting -> {
-            QrCode(st.invite.text(), Modifier.size(220.dp))
+            QrCode(st.invite.text(), Modifier.size(280.dp))
             Text(stringResource(Res.string.desktop_transfer_waiting), style = MaterialTheme.typography.bodyMedium)
-            OutlinedButton(onClick = { com.k4music.desktop.data.PhoneTransfer.stop() }) { Text(stringResource(Res.string.cancel)) }
+            Text("${st.invite.hosts.first()}:${st.invite.port}  ·  same Wi-Fi as the phone", style = MaterialTheme.typography.bodySmall, color = secondary)
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                // A fresh port and key: the old QR code stops working at once.
+                FilledTonalButton(onClick = { com.k4music.desktop.data.PhoneTransfer.start() }) { Text("New QR code") }
+                val clipboard = androidx.compose.ui.platform.LocalClipboardManager.current
+                OutlinedButton(onClick = { clipboard.setText(androidx.compose.ui.text.AnnotatedString(st.invite.text())) }) { Text("Copy code") }
+                OutlinedButton(onClick = { com.k4music.desktop.data.PhoneTransfer.stop() }) { Text("Disconnect") }
+            }
         }
         else -> {
             when (st) {
@@ -669,21 +676,24 @@ private fun TransferSection() = Section(Res.string.desktop_transfer_title) {
     }
 }
 
-/** Black modules on a white square (with a quiet border), as phone scanners expect in light or dark theme. */
+/** Black modules on a white square with the full 4-module quiet zone, as phone scanners expect in light or dark theme. */
 @Composable
 private fun QrCode(text: String, modifier: Modifier) {
     val matrix = remember(text) {
         com.google.zxing.qrcode.QRCodeWriter().encode(
-            text, com.google.zxing.BarcodeFormat.QR_CODE, 0, 0, mapOf(com.google.zxing.EncodeHintType.MARGIN to 2)
+            text, com.google.zxing.BarcodeFormat.QR_CODE, 0, 0,
+            mapOf(com.google.zxing.EncodeHintType.MARGIN to 4, com.google.zxing.EncodeHintType.ERROR_CORRECTION to com.google.zxing.qrcode.decoder.ErrorCorrectionLevel.M)
         )
     }
     Canvas(modifier.background(androidx.compose.ui.graphics.Color.White)) {
-        val cell = size.minDimension / matrix.width
+        // Whole pixels per module keep the edges sharp for the camera.
+        val cell = kotlin.math.floor(size.minDimension / matrix.width).coerceAtLeast(1f)
+        val inset = (size.minDimension - cell * matrix.width) / 2
         for (y in 0 until matrix.height) for (x in 0 until matrix.width) if (matrix.get(x, y)) {
             drawRect(
                 androidx.compose.ui.graphics.Color.Black,
-                topLeft = androidx.compose.ui.geometry.Offset(x * cell, y * cell),
-                size = androidx.compose.ui.geometry.Size(cell + 0.5f, cell + 0.5f)
+                topLeft = androidx.compose.ui.geometry.Offset(inset + x * cell, inset + y * cell),
+                size = androidx.compose.ui.geometry.Size(cell, cell)
             )
         }
     }
@@ -901,7 +911,7 @@ private fun AboutSection() = Section(Res.string.about) {
 const val WEBSITE = "https://k4audio.vercel.app"
 private const val GITHUB = "https://github.com/KartikLangwan/K4Audio"
 private const val CREATOR_SITE = "https://kartiklangwan.vercel.app"
-private val APP_VERSION get() = System.getProperty("jpackage.app-version") ?: "2.14.26"
+private val APP_VERSION get() = com.k4music.desktop.Updater.currentVersion
 
 /**
  * Compares this version with the newest K4 Audio release; downloads always go through the

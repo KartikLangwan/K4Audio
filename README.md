@@ -27,8 +27,8 @@ Downloads are in this repository's [**Releases**](https://github.com/KartikLangw
 | --- | --- | --- |
 | **File** | [K4Audio-v2.14.26-RELEASE.apk](https://github.com/KartikLangwan/K4Audio/releases/download/v2.14.26/K4Audio-v2.14.26-RELEASE.apk) | [K4Audio-Setup-2.14.26.exe](https://github.com/KartikLangwan/K4Audio/releases/download/v2.14.26/K4Audio-Setup-2.14.26.exe) |
 | **Requires** | Android 7.0+, 64-bit ARM (arm64-v8a) | Windows 10 / 11, 64-bit |
-| **Size** | 26.8 MB | 116.2 MB |
-| **SHA-256** | `52EC648D3A8F788F7F96221DDF3F28E042CF6C06D932C1E824BD7B264A797557` | `F8A74627FF4FC5CDC85AA077B3FF7AAB83B118B852AF42EFDA296F6ECED26AB8` |
+| **Size** | 26.9 MB | 116.1 MB |
+| **SHA-256** | `301973D1E805677D6B8522B53B7C8DA9CD434674A952E9E3EB6C0D9A4367CDDB` | `557EEBEDFFC9FCC2794B16A4C8C98E55613BA0656D3F2E8B960A51F4351ED938` |
 
 2.14.26 installs over 2.12.14 and keeps your library, likes, downloads and history. Libraries backed up from 2.14.26 need 2.14.26 or newer to restore.
 
@@ -38,6 +38,10 @@ Downloads are in this repository's [**Releases**](https://github.com/KartikLangw
 
 ## What's new in 2.14.26
 
+- **Much lighter on PC:** the app now uses about 270 MB of memory instead of 470 MB (software drawing, a small garbage collector and capped caches), and the phone app starts its YouTube helper only when a song needs it. Unused code and libraries were removed.
+- **Updates without hunting:** the PC app checks at start and offers the new installer (Settings has the same button); the phone shows a card on Home and a *Check for updates* button in Settings that opens the APK download.
+- **Phone to PC transfer you can scan:** the QR code is shorter and larger (it was too dense for some cameras), the PC has **New QR code**, **Copy code** and **Disconnect**, and the phone has *Enter the code instead* if a camera cannot read the screen.
+- **Discord status finds Discord:** if Discord opens after K4 Audio, the status starts by itself within a few seconds.
 - **K4 Audio:** the app was called K4 Music. New name, new logo and a black-and-white minimal theme on phone and PC. Installing over the old app keeps your library, likes, playlists and downloads; on PC your old `K4 Music` data folder is moved to `K4 Audio` on first start.
 - **A music folder you can see:** `Music\K4 Audio` on the PC is created automatically; on the phone it is `Music › K4 Audio`. Songs you drop in appear under *Library → Local*, and an **Open music folder** button is in the Local tab (and PC Settings).
 - **Time-aware greeting:** Home now says Good morning / afternoon / evening / night (it said "Good evening" in the middle of the night).

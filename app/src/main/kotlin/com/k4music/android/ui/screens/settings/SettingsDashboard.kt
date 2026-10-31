@@ -183,6 +183,7 @@ private fun Hero(onPlayer: () -> Unit) {
             }
             Text(stringResource(R.string.settings_headline), style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold, color = palette.text, modifier = Modifier.padding(top = 8.dp))
             Text(stringResource(R.string.settings_description), style = MaterialTheme.typography.bodyMedium, color = palette.textSecondary)
+            com.k4music.android.ui.components.themed.CheckUpdateButton(Modifier.padding(top = 6.dp))
             Surface(
                 onClick = onPlayer,
                 shape = CircleShape,

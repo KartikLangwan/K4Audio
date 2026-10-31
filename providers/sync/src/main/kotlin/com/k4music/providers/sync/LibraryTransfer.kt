@@ -69,18 +69,23 @@ object LibraryTransfer {
     private const val READ_TIMEOUT_MS = 10_000
     private val json = Json { ignoreUnknownKeys = true; encodeDefaults = false }
 
-    /** What the QR code holds. */
+    /** What the QR code holds: short on purpose (about 50 characters), so the code stays coarse and scans at once. */
     data class Invite(val hosts: List<String>, val port: Int, val code: String) {
-        fun text() = "k4audio-transfer:1;${hosts.joinToString(",")};$port;$code"
+        fun text() = "k4a1;${hosts.joinToString(",")};$port;${code.replace("-", "")}"
 
         companion object {
+            private val prefixes = listOf("k4a1;", "k4audio-transfer:1;", "k4music-transfer:1;")
+
             fun parse(text: String): Invite? {
-                val parts = text.trim().removePrefix("k4audio-transfer:1;").takeIf { it != text.trim() }?.split(';') ?: return null
+                val clean = text.trim()
+                val prefix = prefixes.firstOrNull { clean.startsWith(it) } ?: return null
+                val parts = clean.removePrefix(prefix).split(';')
                 if (parts.size != 3) return null
                 val hosts = parts[0].split(',').filter { it.isNotBlank() }
                 val port = parts[1].toIntOrNull()?.takeIf { it in 1..65535 } ?: return null
-                if (hosts.isEmpty() || SyncCrypto.fromCode(parts[2]) == null) return null
-                return Invite(hosts, port, parts[2])
+                val crypto = SyncCrypto.fromCode(parts[2]) ?: return null
+                if (hosts.isEmpty()) return null
+                return Invite(hosts, port, crypto.code)
             }
         }
     }
@@ -142,15 +147,23 @@ object LibraryTransfer {
         return json.decodeFromString(TransferDoc.serializer(), text)
     }
 
-    /** This PC's addresses on the local network (Wi-Fi / Ethernet), home-network ranges first. */
+    /**
+     * This PC's address(es) on the local network: the one Windows uses to reach the router first, then at most
+     * one more home-network address (many virtual adapters would only make the QR code dense and hard to scan).
+     */
     fun localAddresses(): List<String> = runCatching {
-        NetworkInterface.getNetworkInterfaces().toList()
+        val all = NetworkInterface.getNetworkInterfaces().toList()
             .filter { it.isUp && !it.isLoopback && !it.isVirtual && !it.isPointToPoint }
             .flatMap { it.inetAddresses.toList() }
             .filterIsInstance<Inet4Address>()
             .filter { it.isSiteLocalAddress }
             .map { it.hostAddress }
             .sortedBy { if (it.startsWith("192.168.")) 0 else 1 }
+        val primary = runCatching {
+            // A UDP "connect" sends nothing: it only asks the OS which local address would be used.
+            java.net.DatagramSocket().use { it.connect(InetSocketAddress("192.0.2.1", 9)); it.localAddress.hostAddress }
+        }.getOrNull()?.takeIf { it in all }
+        (listOfNotNull(primary) + all).distinct().take(2)
     }.getOrDefault(emptyList())
 
     /** Phone side: sends [payload] to the first address of [invite] that answers; returns the PC's reply. */

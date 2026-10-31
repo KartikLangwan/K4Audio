@@ -151,7 +151,10 @@ fun Scaffold(
                     }
                 }
 
-                if (isHome) PromoMarquee()
+                if (isHome) {
+                    UpdateCard()
+                    PromoMarquee()
+                }
 
                 val chipTabs = when {
                     key == "settings" -> emptyList()

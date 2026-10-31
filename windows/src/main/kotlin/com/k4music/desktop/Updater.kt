@@ -39,6 +39,18 @@ object Updater {
     private val verified = java.util.concurrent.ConcurrentHashMap<String, String>()
     private val installerName = Regex("K4(Music|Audio)-Setup-.*\\.exe", RegexOption.IGNORE_CASE)
 
+    /** Release notes as plain bullets: the "What's new" list without tables, headings or markdown marks. */
+    internal fun cleanNotes(markdown: String?): String? {
+        val lines = markdown?.lines().orEmpty()
+        val start = lines.indexOfFirst { it.contains("what's new", ignoreCase = true) }
+        val bullets = lines.drop(if (start >= 0) start + 1 else 0)
+            .map { it.trim() }
+            .filter { it.startsWith("- ") || it.startsWith("* ") }
+            .map { "• " + it.drop(2).replace("**", "").replace("`", "").trim() }
+            .take(8)
+        return bullets.joinToString("\n").take(900).ifBlank { null }
+    }
+
     /** The newest release if it is newer than this app; null when up to date. Throws when offline. */
     suspend fun check(): Update? = withContext(Dispatchers.IO) {
         // Releases of the public K4Audio repo.
@@ -51,7 +63,7 @@ object Updater {
         val asset = latest.assets.firstOrNull { installerName.matches(it.name) }
         val digest = asset?.digest?.takeIf { it.matches(Regex("sha256:[0-9a-fA-F]{64}")) }
         // Releases without a verifiable digest remain available through the website.
-        Update(version, latest.markdown?.take(1_500), asset?.downloadUrl?.toString()?.takeIf { digest != null }, asset?.size ?: -1L, digest)
+        Update(version, cleanNotes(latest.markdown), asset?.downloadUrl?.toString()?.takeIf { digest != null }, asset?.size ?: -1L, digest)
     }
 
     /** Downloads the installer (resuming nothing, overwriting a stale copy), reporting 0..1 progress. */

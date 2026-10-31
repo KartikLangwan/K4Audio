@@ -66,6 +66,9 @@ class PhoneTransferTest {
         val code = SyncCrypto.create().code
         val invite = LibraryTransfer.Invite(listOf("192.168.1.5", "10.0.0.2"), 50123, code)
         assertEquals(invite, LibraryTransfer.Invite.parse(invite.text()))
+        assertTrue(invite.text().length < 60, "the QR text stays short so the code stays coarse: ${invite.text().length}")
+        // Older apps' prefixes still read.
+        assertEquals(invite, LibraryTransfer.Invite.parse("k4audio-transfer:1;192.168.1.5,10.0.0.2;50123;$code"))
         assertNull(LibraryTransfer.Invite.parse("https://example.com"))
         assertNull(LibraryTransfer.Invite.parse("k4audio-transfer:1;192.168.1.5;0;$code"))
         assertNull(LibraryTransfer.Invite.parse("k4audio-transfer:1;192.168.1.5;5000;not-a-code"))
@@ -90,6 +93,24 @@ class PhoneTransferTest {
             assertNotNull(received)
             assertEquals(setOf("a"), pc.liked.keys)
         }
+    }
+
+    @Test
+    fun theQrCodeDecodesFromAnImageAtScreenSize() {
+        val invite = LibraryTransfer.Invite(listOf("192.168.1.5", "10.0.0.2"), 50123, SyncCrypto.create().code)
+        val matrix = com.google.zxing.qrcode.QRCodeWriter().encode(invite.text(), com.google.zxing.BarcodeFormat.QR_CODE, 0, 0,
+            mapOf(com.google.zxing.EncodeHintType.MARGIN to 4, com.google.zxing.EncodeHintType.ERROR_CORRECTION to com.google.zxing.qrcode.decoder.ErrorCorrectionLevel.M))
+        val cell = 5 // a 280 dp square on a 100% screen is about this many pixels per module
+        val size = matrix.width * cell
+        val image = java.awt.image.BufferedImage(size, size, java.awt.image.BufferedImage.TYPE_INT_RGB)
+        for (y in 0 until size) for (x in 0 until size) image.setRGB(x, y, if (matrix.get(x / cell, y / cell)) 0 else 0xFFFFFF)
+        val gray = ByteArray(size * size) { i -> (image.getRGB(i % size, i / size) and 0xFF).toByte() }
+        val source = object : com.google.zxing.LuminanceSource(size, size) {
+            override fun getRow(y: Int, row: ByteArray?) = (row ?: ByteArray(size)).also { gray.copyInto(it, 0, y * size, (y + 1) * size) }
+            override fun getMatrix() = gray
+        }
+        val bitmap = com.google.zxing.BinaryBitmap(com.google.zxing.common.HybridBinarizer(source))
+        assertEquals(invite.text(), com.google.zxing.qrcode.QRCodeReader().decode(bitmap).text)
     }
 
     @Test

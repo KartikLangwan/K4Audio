@@ -65,7 +65,6 @@ dependencies {
     implementation(projects.providers.lrclib)
     implementation(projects.providers.sync)
     implementation(projects.providers.sponsorblock)
-    implementation(projects.providers.translate)
 
     implementation(compose.desktop.currentOs)
     implementation(libs.zxing.core) // the QR code for Phone transfer
@@ -159,8 +158,11 @@ compose.desktop {
         mainClass = "com.k4music.desktop.MainKt"
         jvmArgs += listOf(
             "-Dfile.encoding=UTF-8", "-Xss2m",
-            // A music app idles in the background for hours: give unused heap back to Windows.
-            "-XX:G1PeriodicGCInterval=60000", "-XX:MinHeapFreeRatio=10", "-XX:MaxHeapFreeRatio=30"
+            // Light on memory (measured: 470 MB -> ~265 MB working set): software drawing instead of a GPU
+            // surface, a small single-threaded collector, and capped heap, metaspace and code cache.
+            "-Dskiko.renderApi=SOFTWARE",
+            "-XX:+UseSerialGC", "-Xms16m", "-Xmx384m", "-XX:MinHeapFreeRatio=10", "-XX:MaxHeapFreeRatio=30",
+            "-XX:ReservedCodeCacheSize=48m", "-XX:MaxMetaspaceSize=160m", "-XX:CICompilerCount=2", "-XX:-UsePerfData"
         )
 
         nativeDistributions {

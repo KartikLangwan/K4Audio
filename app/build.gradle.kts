@@ -231,7 +231,6 @@ dependencies {
     implementation(libs.compose.ui)
     implementation(libs.compose.ui.util)
     implementation(libs.compose.shimmer)
-    implementation(libs.compose.lottie)
     implementation(libs.compose.material3)
 
     implementation(libs.coil.compose)
@@ -267,6 +266,7 @@ dependencies {
     implementation(libs.logback)
 
     testImplementation(libs.junit)
+    testImplementation("org.json:json:20250517") // the real org.json: the Android stub returns nothing in unit tests
 
     implementation(projects.providers.github)
     implementation(projects.providers.common)
@@ -275,7 +275,6 @@ dependencies {
     implementation(projects.providers.lrclib)
     implementation(projects.providers.sync)
     implementation(projects.providers.sponsorblock)
-    implementation(projects.providers.translate)
     implementation(projects.core.data)
     implementation(projects.core.ui)
     implementation(libs.zxing.android) // scans the PC's QR code for Send library to PC

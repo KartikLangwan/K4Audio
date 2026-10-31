@@ -35,7 +35,7 @@ import org.jetbrains.compose.resources.painterResource
 /** One image loader for the app: memory cache plus a 256 MB disk cache in K4 Audio's local folder. */
 fun k4ImageLoader(context: PlatformContext) = ImageLoader.Builder(context)
     .components { add(KtorNetworkFetcherFactory()) }
-    .memoryCache { MemoryCache.Builder().maxSizePercent(context, 0.15).build() }
+    .memoryCache { MemoryCache.Builder().maxSizePercent(context, 0.10).build() }
     .diskCache { DiskCache.Builder().directory(AppPaths.imageCache.toOkioPath()).maxSizeBytes(256L * 1024 * 1024).build() }
     .crossfade(true)
     .build()

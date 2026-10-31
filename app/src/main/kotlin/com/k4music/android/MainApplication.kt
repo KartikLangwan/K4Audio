@@ -728,11 +728,6 @@ object Dependencies {
             .also { if (!it.canExecute()) it.setExecutable(true) }
     }
 
-    /** Imports yt-dlp ahead of need, so the first fallback stream does not pay Python's start-up. */
-    fun warmUp() {
-        module
-    }
-
     fun runDownload(id: String, format: String = "bestaudio/best"): String = module
         .callAttr("download", quickjsPath.absolutePath, id, format)
         .toString()

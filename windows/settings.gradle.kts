@@ -34,8 +34,7 @@ listOf(
     "providers/kugou",
     "providers/lrclib",
     "providers/sponsorblock",
-    "providers/sync",
-    "providers/translate"
+    "providers/sync"
 ).forEach { path ->
     val name = ":" + path.replace('/', ':')
     include(name)

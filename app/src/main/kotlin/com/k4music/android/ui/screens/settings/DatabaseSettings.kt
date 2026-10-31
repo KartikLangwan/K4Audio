@@ -195,11 +195,13 @@ fun DatabaseSettings() = with(DataPreferences) {
         ) {
             val resources = androidx.compose.ui.platform.LocalResources.current
             var sending by remember { mutableStateOf(false) }
-            val scanLauncher = rememberLauncherForActivityResult(com.journeyapps.barcodescanner.ScanContract()) { result ->
-                val scanned = result.contents ?: return@rememberLauncherForActivityResult
+            var typing by remember { mutableStateOf(false) }
+            var typed by remember { mutableStateOf("") }
+            // Scanned or typed, the code goes the same way.
+            fun send(code: String) {
                 sending = true
                 scope.launch {
-                    val message = when (val sent = com.k4music.android.k4.PhoneTransfer.send(scanned)) {
+                    val message = when (val sent = com.k4music.android.k4.PhoneTransfer.send(code)) {
                         is com.k4music.android.k4.PhoneTransfer.Result.Sent ->
                             if (sent.likes == 0 && sent.playlists == 0) resources.getString(R.string.transfer_nothing_new)
                             else resources.getString(R.string.transfer_done, sent.likes, sent.playlists)
@@ -209,6 +211,9 @@ fun DatabaseSettings() = with(DataPreferences) {
                     sending = false
                     context.toast(message)
                 }
+            }
+            val scanLauncher = rememberLauncherForActivityResult(com.journeyapps.barcodescanner.ScanContract()) { result ->
+                result.contents?.let(::send)
             }
             SettingsEntry(
                 title = stringResource(R.string.transfer_send),
@@ -220,7 +225,34 @@ fun DatabaseSettings() = with(DataPreferences) {
                             .setDesiredBarcodeFormats(com.journeyapps.barcodescanner.ScanOptions.QR_CODE)
                             .setPrompt(resources.getString(R.string.transfer_scan_prompt))
                             .setBeepEnabled(false)
+                            .setOrientationLocked(false)
                     )
+                }
+            )
+            SettingsEntry(
+                title = "Enter the code instead",
+                text = "If the camera cannot read the PC's QR code: copy the code with the PC's Copy code button and paste it here.",
+                isEnabled = !sending,
+                onClick = { typing = true }
+            )
+            if (typing) androidx.compose.material3.AlertDialog(
+                onDismissRequest = { typing = false },
+                title = { androidx.compose.material3.Text("Code from the PC") },
+                text = {
+                    androidx.compose.material3.OutlinedTextField(
+                        value = typed,
+                        onValueChange = { typed = it },
+                        singleLine = true,
+                        placeholder = { androidx.compose.material3.Text("k4a1;192.168.1.5;50123;…") }
+                    )
+                },
+                confirmButton = {
+                    androidx.compose.material3.TextButton(onClick = { typing = false; send(typed.trim()); typed = "" }) {
+                        androidx.compose.material3.Text("Send")
+                    }
+                },
+                dismissButton = {
+                    androidx.compose.material3.TextButton(onClick = { typing = false }) { androidx.compose.material3.Text("Cancel") }
                 }
             )
         }

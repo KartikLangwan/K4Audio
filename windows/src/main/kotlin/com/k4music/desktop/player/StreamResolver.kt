@@ -1,6 +1,8 @@
 package com.k4music.desktop.player
 
 import com.k4music.desktop.AppLog
+import com.k4music.android.playlistimport.Candidate
+import com.k4music.android.playlistimport.pickBestMatch
 import com.k4music.desktop.AppPaths
 import com.k4music.desktop.k4.StreamFallback
 import com.k4music.desktop.k4.findSaavnStream
@@ -111,6 +113,7 @@ class StreamResolver {
                 val blocked = youtubeBlocked()
                 youtube
                     ?: (if (fallbackOn) saavnFallback(track, remember = !blocked)?.let { if (blocked) it.copy(temporary = true) else it } else null)
+                    ?: (if (fallbackOn && !blocked) similarYoutube(track) else null)
                     ?: throw UnplayableException(if (blocked) "YouTube is blocking this network for now" else "No playable stream")
             }
         }
@@ -198,6 +201,36 @@ class StreamResolver {
         } finally {
             if (process.isAlive) process.destroyForcibly()
         }
+    }
+
+    /**
+     * Last resort: the song's own video and JioSaavn both failed, so look for another YouTube upload of it.
+     * Only a result whose title, artist or duration pass the same check as JioSaavn matches is played.
+     */
+    private suspend fun similarYoutube(track: Track): Stream? {
+        val exe = AppPaths.tools.resolve("yt-dlp/yt-dlp.exe")
+        if (!exe.isFile || track.title.isBlank()) return null
+        val lines = runCatching {
+            runInterruptible(Dispatchers.IO) {
+                com.k4music.desktop.data.Maintenance.usingYtDlp {
+                    kotlinx.coroutines.runBlocking {
+                        com.k4music.desktop.data.Maintenance.runTool(listOf(
+                            exe.absolutePath, "--flat-playlist", "--no-warnings", "--socket-timeout", "10",
+                            "--print", "%(id)s	%(title)s	%(channel)s	%(duration)s",
+                            "ytsearch5:${track.title} ${track.artists.orEmpty()}".trim()
+                        ), 20)
+                    }
+                }
+            }
+        }.getOrNull()?.lines().orEmpty()
+        val candidates = lines.mapNotNull { line ->
+            val f = line.split('	')
+            if (f.size < 4 || f[0].length != 11 || f[0] == track.id) null
+            else Candidate(f[1], f[2], f[3].toDoubleOrNull()?.let { (it * 1000).toLong() }, f[0])
+        }
+        val match = pickBestMatch(track.title, track.artists.orEmpty(), track.durationMs, candidates) ?: return null
+        AppLog.i(TAG, "Playing ${track.id} from another YouTube upload (${match.payload})")
+        return ytDlp(match.payload)
     }
 
     /**

@@ -22,37 +22,6 @@ import java.io.EOFException
 import java.io.IOException
 import kotlin.math.pow
 
-class RangeHandlerDataSourceFactory(private val parent: DataSource.Factory) : DataSource.Factory {
-    class Source(private val parent: DataSource) : DataSource by parent {
-        override fun open(dataSpec: DataSpec) = runCatching {
-            parent.open(dataSpec)
-        }.getOrElse { e ->
-            if (
-                e.findCause<EOFException>() != null ||
-                e.findCause<InvalidResponseCodeException>()?.responseCode == 416
-            ) {
-                runCatching { parent.close() }
-                parent.open(
-                dataSpec
-                    .buildUpon()
-                    .setHttpRequestHeaders(
-                        dataSpec.httpRequestHeaders.filterNot {
-                            it.key.equals("range", ignoreCase = true)
-                        }
-                    )
-                    .setLength(C.LENGTH_UNSET.toLong())
-                    .build()
-                )
-            }
-            else throw e
-        }
-
-        override fun getResponseHeaders(): Map<String, List<String>> = parent.responseHeaders
-    }
-
-    override fun createDataSource() = Source(parent.createDataSource())
-}
-
 class CatchingDataSourceFactory(
     private val parent: DataSource.Factory,
     private val onError: ((Throwable, DataSpec?) -> Unit)?
@@ -84,7 +53,6 @@ class CatchingDataSourceFactory(
     override fun createDataSource() = Source(parent.createDataSource())
 }
 
-fun DataSource.Factory.handleRangeErrors(): DataSource.Factory = RangeHandlerDataSourceFactory(this)
 fun DataSource.Factory.handleUnknownErrors(
     onError: ((Throwable, DataSpec?) -> Unit)? = null
 ): DataSource.Factory = CatchingDataSourceFactory(

@@ -30,7 +30,7 @@ data class Stream(val url: String, val source: StreamSource, val headers: Map<St
 class UnplayableException(message: String) : Exception(message)
 
 /**
- * yt-dlp (15 s deadline) -> the same song on JioSaavn (Smart fallback) -> unplayable.
+ * yt-dlp (30 s deadline) -> the same song on JioSaavn (Smart fallback) -> unplayable.
  * Resolved urls are cached per song for 15 minutes.
  *
  * No direct Innertube url step (Android's first step): on PC those urls play the first
@@ -187,6 +187,7 @@ class StreamResolver {
                     val error = errors.lines().lastOrNull { it.startsWith("ERROR") }.orEmpty().take(200)
                     AppLog.w(TAG, "yt-dlp gave no usable answer for $videoId (exit ${process.exitValue()}): $error")
                     if (BLOCKED_SIGNS.any { it in error }) { blocked.set(true); if (markBlocked) onYoutubeBlocked() }
+                    else if (GONE_SIGNS.none { it in error }) blocked.set(true) // odd failure: other clients often still work
                 }
                 .getOrNull() ?: return null
             if (info.id != videoId) return null
@@ -246,11 +247,13 @@ class StreamResolver {
     private companion object {
         const val TAG = "StreamResolver"
         const val TTL_MS = 15 * 60 * 1000L
-        const val SLOW_YOUTUBE_MS = 10_000L
-        const val YT_DLP_TIMEOUT_S = 15L
+        const val SLOW_YOUTUBE_MS = 4_000L
+        const val YT_DLP_TIMEOUT_S = 30L // a cold start (unpack + JS challenge) can pass 15 s and was killed
         const val BLOCK_PAUSE_MS = 10 * 60 * 1000L
         /** yt-dlp errors that mean "YouTube is refusing this network", not "this song is unavailable". */
         val BLOCKED_SIGNS = listOf("not a bot", "HTTP Error 429", "LOGIN_REQUIRED", "page needs to be reloaded")
+        /** Songs no client can fix: do not spend a second yt-dlp run on them. */
+        val GONE_SIGNS = listOf("Video unavailable", "Private video", "has been removed", "copyright", "not available in your country")
         val json = Json { ignoreUnknownKeys = true; isLenient = true }
     }
 }

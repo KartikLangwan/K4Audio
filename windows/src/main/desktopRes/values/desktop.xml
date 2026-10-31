@@ -174,8 +174,8 @@ Esc  Close player / go back</string>
     <string name="desktop_transfer_description">Bring your phone's likes and playlists to this PC. Nothing goes over the internet: the phone sends them straight here, so both must be on the same Wi-Fi. Nothing on this PC is removed.</string>
     <string name="desktop_transfer_start">Show QR code</string>
     <string name="desktop_transfer_waiting">On your phone: Settings → Backup &amp; restore → Send library to PC, then scan this code. It works for 5 minutes. If Windows Firewall asks, tick both Private and Public networks and click Allow, or the phone cannot reach this PC.</string>
-    <string name="desktop_transfer_done">New from your phone. Likes: %1$d · Playlists: %2$d · Songs: %3$d</string>
-    <string name="desktop_transfer_nothing_new">Your phone sent its library. Everything in it was already on this PC.</string>
+    <string name="desktop_transfer_done">Connected to your phone ✓ New from it. Likes: %1$d · Playlists: %2$d · Songs: %3$d</string>
+    <string name="desktop_transfer_nothing_new">Connected to your phone ✓ It sent its library. Everything in it was already on this PC.</string>
     <string name="desktop_transfer_expired">The code expired. Show a new one to try again.</string>
     <string name="desktop_transfer_no_network">This PC is not on a local network. Connect it to the same Wi-Fi as your phone.</string>
 </resources>

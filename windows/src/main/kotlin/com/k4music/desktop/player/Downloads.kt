@@ -84,7 +84,10 @@ object Downloads {
             try {
                 previous?.join() // A cancelled attempt finishes cleanup before its replacement starts.
                 permits.withPermit {
-                    if (file(track.id) == null) fetch(track) else _done.update { it + track.id }
+                    if (file(track.id) == null) {
+                        // One retry: a refused url is rejected in fetch, so the second run takes the next source.
+                        try { fetch(track) } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (e: Exception) { fetch(track) }
+                    } else _done.update { it + track.id }
                 }
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e

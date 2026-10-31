@@ -36,9 +36,12 @@ suspend fun searchSaavnSongs(query: String): List<K4Song> = try {
 /** The same song on JioSaavn, as a verified CDN url, or null (title plus artist or duration must match). */
 suspend fun findSaavnStream(title: String, artist: String, durationMs: Long?, quality: String): String? {
     if (title.isBlank()) return null
-    val candidates = searchSaavnSongs("$title $artist".trim())
-        .map { Candidate(it.title, it.artist, it.durationMs.takeIf { d -> d > 0 }, it.contentUri) }
-    val match = pickBestMatch(title, artist, durationMs, candidates) ?: return null
+    // Second query (title only) when "title artist" finds no match: artist spellings differ between YouTube and Saavn.
+    val match = listOf("$title $artist".trim(), title).distinct().firstNotNullOfOrNull { query ->
+        val candidates = searchSaavnSongs(query)
+            .map { Candidate(it.title, it.artist, it.durationMs.takeIf { d -> d > 0 }, it.contentUri) }
+        pickBestMatch(title, artist, durationMs, candidates)
+    } ?: return null
     return try { saavnApi.bestVariant(match.payload, quality = quality) }
     catch (error: CancellationException) { throw error }
     catch (_: Exception) { null }

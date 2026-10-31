@@ -203,18 +203,3 @@ fun MoodItem(
 
 }
 
-@Composable
-fun MoodItemPlaceholder(
-    width: Dp,
-    modifier: Modifier = Modifier
-) = Spacer(
-    modifier = modifier
-        .background(
-            color = LocalAppearance.current.colorPalette.shimmer,
-            shape = LocalAppearance.current.thumbnailShape
-        )
-        .size(
-            width = width,
-            height = Dimensions.items.moodHeight
-        )
-)

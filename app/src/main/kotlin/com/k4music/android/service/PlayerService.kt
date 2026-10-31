@@ -1396,7 +1396,7 @@ class PlayerService : InvincibleService(), Player.Listener, PlaybackStatsListene
     companion object {
         private const val DEFAULT_CACHE_DIRECTORY = "exoplayer"
         private const val DEFAULT_CHUNK_LENGTH = 512 * 1024L
-        private const val YT_DLP_TIMEOUT_MS = 15_000L
+        private const val YT_DLP_TIMEOUT_MS = 8_000L
         private const val RECOVERY_DELAY_MS = 300L
         private val ytDlpScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 

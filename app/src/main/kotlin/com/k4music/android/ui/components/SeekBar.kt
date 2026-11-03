@@ -85,10 +85,7 @@ fun SeekBar(
     range: ClosedRange<Long> = 0L..media.duration
 ) {
     var scrubbingPosition by remember(media) { mutableStateOf<Long?>(null) }
-    val animatedPosition by animateFloatAsState(
-        targetValue = scrubbingPosition?.toFloat() ?: position.toFloat(),
-        label = ""
-    )
+    val animatedPosition = scrubbingPosition?.toFloat() ?: position.toFloat()
 
     var isDragging by remember { mutableStateOf(false) }
 

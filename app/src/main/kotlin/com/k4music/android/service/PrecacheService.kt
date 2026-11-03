@@ -127,13 +127,13 @@ class PrecacheService : DownloadService(
     inner class NotificationActionReceiver : ActionReceiver("com.k4music.android.precache") {
         val cancel by action { context, _ ->
             runCatching {
-                sendPauseDownloads(
+                sendRemoveAllDownloads(
                     /* context         = */ context,
                     /* clazz           = */ PrecacheService::class.java,
                     /* foreground      = */ true
                 )
             }.recoverCatching {
-                sendPauseDownloads(
+                sendRemoveAllDownloads(
                     /* context         = */ context,
                     /* clazz           = */ PrecacheService::class.java,
                     /* foreground      = */ false

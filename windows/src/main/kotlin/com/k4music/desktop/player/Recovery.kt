@@ -5,7 +5,8 @@ package com.k4music.desktop.player
 /** Terminal-error recovery is bounded per track; a successful load cannot reset it. */
 class PlaybackRetryBudget(private val limit: Int = 2) {
     private var mediaId: String? = null
-    private var attempts = 0
+    var attempts = 0
+        private set
 
     fun onMediaTransition(id: String?) {
         if (id != mediaId) { mediaId = id; attempts = 0 }
@@ -41,7 +42,8 @@ fun chooseRecovery(
     retries: PlaybackRetryBudget,
     fallbacks: PlaybackRetryBudget
 ): Recovery = when {
-    failure == Failure.Network && retries.tryAcquire(id) -> Recovery.Retry
+    // A refused source may only have an expired link: one fresh URL before giving up on YouTube.
+    (failure == Failure.Network || retries.attempts == 0) && retries.tryAcquire(id) -> Recovery.Retry
     fallbackAllowed && fallbacks.tryAcquire(id) -> Recovery.Fallback
     retries.tryAcquire(id) -> Recovery.Retry
     else -> Recovery.None

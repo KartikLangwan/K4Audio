@@ -132,7 +132,7 @@ class StreamResolver {
         if (quick != null || yt.isCompleted) return@coroutineScope quick ?: yt.await()
         AppLog.w(TAG, "YouTube is slow for ${track.id}; trying JioSaavn meanwhile")
         val saavn = saavnFallback(track, remember = false)
-        if (saavn != null && !yt.isCompleted) { yt.cancel(); return@coroutineScope saavn.copy(temporary = true) }
+        if (saavn != null && !yt.isCompleted) return@coroutineScope saavn.copy(temporary = true).also { background.launch { runCatching { yt.await() }.getOrNull()?.let { cache[track.id] = Cached(it, System.currentTimeMillis()) } } }
         yt.await() ?: saavn?.copy(temporary = true)
     }
 
@@ -143,8 +143,11 @@ class StreamResolver {
                 // "Sign in to confirm you're not a bot" is often specific to yt-dlp's default web client:
                 // try the clients that need no sign-in once before treating the network as blocked.
                 val blocked = java.util.concurrent.atomic.AtomicBoolean(false)
-                ytDlpNow(videoId, null, blocked)
-                    ?: if (blocked.get()) ytDlpNow(videoId, "youtube:player_client=tv,android_vr,web_safari", blocked, markBlocked = true) else null
+                val alt = "youtube:player_client=tv,android_vr,web_safari"
+                // The client that worked last time goes first, so a bot-checked default client costs one run, not one per song.
+                if (useAltClient) ytDlpNow(videoId, alt, blocked, markBlocked = true)
+                else ytDlpNow(videoId, null, blocked)
+                    ?: if (blocked.get()) ytDlpNow(videoId, alt, blocked, markBlocked = true)?.also { useAltClient = true } else null
             }
         }
 
@@ -216,7 +219,7 @@ class StreamResolver {
                     kotlinx.coroutines.runBlocking {
                         com.k4music.desktop.data.Maintenance.runTool(listOf(
                             exe.absolutePath, "--flat-playlist", "--no-warnings", "--socket-timeout", "10",
-                            "--print", "%(id)s	%(title)s	%(channel)s	%(duration)s",
+                            "--encoding", "utf-8", "--print", "%(id)s	%(title)s	%(channel)s	%(duration)s",
                             "ytsearch5:${track.title} ${track.artists.orEmpty()}".trim()
                         ), 20)
                     }
@@ -239,6 +242,7 @@ class StreamResolver {
      * without being pinned to it.
      */
     @Volatile private var blockedUntil = 0L
+    @Volatile private var useAltClient = false
     /** Called (from a background thread) when YouTube starts blocking this network. */
     var onBlocked: () -> Unit = {}
     private fun youtubeBlocked() = System.currentTimeMillis() < blockedUntil
@@ -280,7 +284,7 @@ class StreamResolver {
     private companion object {
         const val TAG = "StreamResolver"
         const val TTL_MS = 15 * 60 * 1000L
-        const val SLOW_YOUTUBE_MS = 4_000L
+        const val SLOW_YOUTUBE_MS = 7_000L
         const val YT_DLP_TIMEOUT_S = 30L // a cold start (unpack + JS challenge) can pass 15 s and was killed
         const val BLOCK_PAUSE_MS = 10 * 60 * 1000L
         /** yt-dlp errors that mean "YouTube is refusing this network", not "this song is unavailable". */

@@ -98,8 +98,6 @@ fun SongRow(
         exists
     } else true
     val unavailableLabel = org.jetbrains.compose.resources.stringResource(Res.string.local_file_unavailable)
-    // Resting the pointer on a song starts resolving it, so the click plays almost at once.
-    androidx.compose.runtime.LaunchedEffect(hovered) { if (hovered) { kotlinx.coroutines.delay(300); player.prefetch(track) } }
 
     Box(modifier) {
         Row(

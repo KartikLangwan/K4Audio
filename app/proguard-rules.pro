@@ -87,8 +87,3 @@
 -keep class com.chaquo.python.** { *; }
 -dontwarn com.chaquo.python.**
 
-# Compose UI runtime (generated + lambdas)
--keep class androidx.compose.runtime.** { *; }
--keepclassmembers class * {
-    @androidx.compose.runtime.Composable *;
-}

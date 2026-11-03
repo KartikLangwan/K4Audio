@@ -303,7 +303,12 @@ fun main(args: Array<String>) {
                         3 -> player.next()
                     }
                 }
-                player.state.collect { Taskbar.setPlaying(it.playing) }
+                var lastError: String? = null
+                player.state.collect {
+                    Taskbar.setPlaying(it.playing)
+                    // A song that no source could play must say so, not just stop.
+                    if (it.error != lastError) { lastError = it.error; it.error?.let { e -> com.k4music.desktop.ui.AppDialogs.show(e) } }
+                }
             }
             // Follows the Windows setting while it changes (checked every few seconds, only in System mode).
             var systemDark by remember { mutableStateOf(readSystemDark()) }

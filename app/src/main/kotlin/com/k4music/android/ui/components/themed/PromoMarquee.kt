@@ -38,12 +38,7 @@ import com.k4music.core.ui.LocalAppearance
 fun PromoMarquee(modifier: Modifier = Modifier) {
     val palette = LocalAppearance.current.colorPalette
     val uriHandler = LocalUriHandler.current
-    val glow by rememberInfiniteTransition(label = "promo-glow").animateFloat(
-        initialValue = 6f,
-        targetValue = 20f,
-        animationSpec = infiniteRepeatable(tween(1400), RepeatMode.Reverse),
-        label = "promo-glow-radius"
-    )
+    val glow = 12f // static: an animated radius recomposed the strip every frame
     val text = listOf(
         stringResource(R.string.promo_made_by, Brand.INSTAGRAM_HANDLE),
         Brand.WEBSITE_URL.removePrefix("https://"),

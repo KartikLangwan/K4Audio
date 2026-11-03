@@ -132,7 +132,10 @@ class PlayerController(private val mpv: Mpv, private val resolver: StreamResolve
             }
             override fun onDuration(seconds: Double) = dispatchEvent { _state.update { it.copy(durationSeconds = seconds) } }
             override fun onPaused(paused: Boolean) = dispatchEvent { _state.update { it.copy(playing = !paused) } }
-            override fun onBuffering(buffering: Boolean) = dispatchEvent { _state.update { it.copy(buffering = buffering) } }
+            override fun onBuffering(buffering: Boolean) = dispatchEvent {
+                if (!buffering) seekWatchdog?.cancel()
+                _state.update { it.copy(buffering = buffering) }
+            }
             override fun onLoaded() = dispatchEvent {
                 _state.update { it.copy(buffering = false, error = null) }
                 _state.value.current?.let { track -> onTrackStarted(track); prefetchNext() }
@@ -163,6 +166,11 @@ class PlayerController(private val mpv: Mpv, private val resolver: StreamResolve
                     if (generation != endedGeneration) return@launch
                     val duration = _state.value.durationSeconds
                     when {
+                        // A dead sound device is not the song's fault: reopen the output, keep the same stream.
+                        error != null && error.contains("audio output", ignoreCase = true) -> {
+                            mpv.reloadAudio(); delay(RECOVERY_DELAY_MS)
+                            if (generation == endedGeneration) load(lastPosition, fresh = false)
+                        }
                         error != null -> onFailure(Failure.Source, error)
                         // A stream the server cut off reads as a normal end: resume it instead of moving on.
                         duration > 0 && lastPosition < duration - EARLY_END_SECONDS -> {
@@ -378,7 +386,24 @@ class PlayerController(private val mpv: Mpv, private val resolver: StreamResolve
     /** Gets a song's stream ready before it is clicked (hovered rows), so it starts at once. */
     fun prefetch(track: Track) = resolver.prefetch(track)
 
-    fun seek(seconds: Double) { _position.value = seconds; mpv.seek(seconds) }
+    private var seekWatchdog: Job? = null
+
+    /** Seeks on the serial owner; a seek that never restarts (refused range, dead URL) reloads at the target. */
+    fun seek(seconds: Double) {
+        _position.value = seconds
+        scope.launch {
+            if (currentStream == null) return@launch
+            lastPosition = seconds
+            mpv.seek(seconds)
+            val seekGeneration = generation
+            _state.update { it.copy(buffering = true) }
+            seekWatchdog?.cancel()
+            seekWatchdog = launch {
+                delay(SEEK_STALL_MS)
+                if (generation == seekGeneration && _state.value.buffering && !closed) onFailure(Failure.Network, "Seek stalled")
+            }
+        }
+    }
     fun setVolume(percent: Int) { Settings.volume = percent.coerceIn(0, 100); mpv.setVolume(Settings.volume) }
     fun setMuted(muted: Boolean) { Settings.muted = muted; mpv.setMuted(muted) }
 
@@ -510,6 +535,7 @@ class PlayerController(private val mpv: Mpv, private val resolver: StreamResolve
         val failedGeneration = generation
         val track = _state.value.current ?: return
         val stream = currentStream
+        val wasPlaying = _state.value.playing || _state.value.buffering
         if (stream != null) resolver.reject(track, stream)
         val recovery = chooseRecovery(
             failure = failure,
@@ -520,10 +546,10 @@ class PlayerController(private val mpv: Mpv, private val resolver: StreamResolve
         )
         AppLog.w(TAG, "Playback failure for ${track.id} ($failure: $message) -> $recovery")
         when (recovery) {
-            Recovery.Retry -> { delay(RECOVERY_DELAY_MS); if (generation == failedGeneration) load(_position.value, fresh = false) }
+            Recovery.Retry -> { delay(RECOVERY_DELAY_MS * retries.attempts * retries.attempts); if (generation == failedGeneration) load(_position.value, autoPlay = wasPlaying, fresh = false) }
             Recovery.Fallback -> {
                 delay(RECOVERY_DELAY_MS)
-                if (generation == failedGeneration) { StreamFallback.force(track.id); load(_position.value, fresh = false) }
+                if (generation == failedGeneration) { StreamFallback.force(track.id); load(_position.value, autoPlay = wasPlaying, fresh = false) }
             }
             Recovery.None -> _state.update { it.copy(buffering = false, playing = false, error = message ?: "Playback failed") }
         }
@@ -559,7 +585,7 @@ class PlayerController(private val mpv: Mpv, private val resolver: StreamResolve
     private fun prefetchNext() {
         val s = _state.value
         if (!s.playing) return
-        (1..2).mapNotNull { s.queue.getOrNull(s.index + it) }.forEach(resolver::prefetch)
+        (1..1).mapNotNull { s.queue.getOrNull(s.index + it) }.forEach(resolver::prefetch)
     }
 
     private fun changed() {
@@ -594,6 +620,7 @@ class PlayerController(private val mpv: Mpv, private val resolver: StreamResolve
     private companion object {
         const val TAG = "Player"
         const val RECOVERY_DELAY_MS = 300L
+        const val SEEK_STALL_MS = 8_000L
         const val MAX_QUEUE = 500
         const val KEEP_PLAYED = 50
         /** An end this far before the song's length is a broken stream, not the song finishing. */

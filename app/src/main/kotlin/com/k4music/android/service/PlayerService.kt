@@ -1396,7 +1396,7 @@ class PlayerService : InvincibleService(), Player.Listener, PlaybackStatsListene
     companion object {
         private const val DEFAULT_CACHE_DIRECTORY = "exoplayer"
         private const val DEFAULT_CHUNK_LENGTH = 512 * 1024L
-        private const val YT_DLP_TIMEOUT_MS = 8_000L
+        private const val YT_DLP_TIMEOUT_MS = 15_000L
         private const val RECOVERY_DELAY_MS = 300L
         private val ytDlpScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
@@ -1468,7 +1468,6 @@ class PlayerService : InvincibleService(), Player.Listener, PlaybackStatsListene
             // YouTube could not serve this song: play the same track from JioSaavn under the same
             // cache key. The old bytes are purged first so two sources never mix in one file.
             fun saavnFallback(): DataSpec? {
-                runCatching { cache.removeResource(mediaId) }
                 uriCache.remove(mediaId)
                 val item = runCatching { runBlocking(Dispatchers.IO) { findMediaItem(mediaId) } }.getOrNull()
                 val song = if (item != null) null
@@ -1486,11 +1485,14 @@ class PlayerService : InvincibleService(), Player.Listener, PlaybackStatsListene
                             ) }
                     }.getOrNull()
                 }
-                StreamFallback.resolved(mediaId, url)
                 if (url == null) {
+                    // Nothing to switch to: keep the cached audio instead of purging it for nothing.
+                    StreamFallback.resolved(mediaId, null)
                     Log.w(TAG, "No JioSaavn fallback for $mediaId ($title)")
                     return null
                 }
+                StreamFallback.resolved(mediaId, url)
+                runCatching { cache.removeResource(mediaId) }
                 Log.i(TAG, "Playing $mediaId from JioSaavn fallback")
                 val fallbackLen: Long? = null // Download completion records the actual byte length.
                 transaction {
@@ -1611,6 +1613,10 @@ class PlayerService : InvincibleService(), Player.Listener, PlaybackStatsListene
                         }.mapCatching {
                             YouTubeDLResponse.fromString(it)
                         }.onFailure {
+                            // A seek cancels this load by interrupting the thread: that is not a yt-dlp failure,
+                            // so it must not purge the cache or pin the song to JioSaavn.
+                            if (it is InterruptedException || it is kotlinx.coroutines.CancellationException || Thread.currentThread().isInterrupted)
+                                throw java.io.InterruptedIOException("Load cancelled")
                             Log.w(TAG, "yt-dlp failed for $mediaId", it)
                             if (YOUTUBE_BLOCKED_SIGNS.any { sign -> it.message?.contains(sign) == true }) {
                                 Log.w(TAG, "YouTube is blocking this network; JioSaavn for a while")

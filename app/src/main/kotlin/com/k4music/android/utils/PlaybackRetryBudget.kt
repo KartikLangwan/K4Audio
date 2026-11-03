@@ -20,7 +20,11 @@ internal class PlaybackRetryBudget(private val limit: Int = 2) {
 internal fun isRecoverablePlaybackFailure(code: Int, httpStatus: Int?): Boolean =
     if (httpStatus != null) httpStatus in setOf(403, 408, 410, 416, 429, 500, 502, 503, 504)
     else code == PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_FAILED ||
-        code == PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_TIMEOUT
+        code == PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_TIMEOUT ||
+        code == PlaybackException.ERROR_CODE_IO_UNSPECIFIED // a failed stream lookup: try a fresh link first
+
+/** Output/decoder faults say nothing about the stream: never pin the song to the fallback for them. */
+internal fun isDeviceFailure(code: Int): Boolean = code in 5001..5002 || code in 4001..4003
 
 internal enum class Recovery { Retry, Fallback, None }
 
@@ -37,7 +41,7 @@ internal fun chooseRecovery(
     fallbacks: PlaybackRetryBudget
 ): Recovery = when {
     httpStatus == null && isRecoverablePlaybackFailure(code, null) && retries.tryAcquire(id) -> Recovery.Retry
-    fallbackAllowed && fallbacks.tryAcquire(id) -> Recovery.Fallback
-    isRecoverablePlaybackFailure(code, httpStatus) && retries.tryAcquire(id) -> Recovery.Retry
+    fallbackAllowed && !isDeviceFailure(code) && fallbacks.tryAcquire(id) -> Recovery.Fallback
+    (isRecoverablePlaybackFailure(code, httpStatus) || isDeviceFailure(code)) && retries.tryAcquire(id) -> Recovery.Retry
     else -> Recovery.None
 }

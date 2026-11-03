@@ -22,7 +22,7 @@ class PlaybackRecoveryTest {
             sequence(PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS, 403, fallbackAllowed = true)
         )
         assertEquals(
-            listOf(Recovery.Fallback, Recovery.None, Recovery.None, Recovery.None, Recovery.None),
+            listOf(Recovery.Retry, Recovery.Retry, Recovery.Fallback, Recovery.None, Recovery.None),
             sequence(PlaybackException.ERROR_CODE_IO_UNSPECIFIED, null, fallbackAllowed = true)
         )
     }
@@ -71,5 +71,11 @@ class PlaybackRecoveryTest {
         listOf(400, 401, 404).forEach { assertFalse(isRecoverablePlaybackFailure(0, it)) }
         assertTrue(isRecoverablePlaybackFailure(PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_TIMEOUT, null))
         assertFalse(isRecoverablePlaybackFailure(PlaybackException.ERROR_CODE_DECODING_FAILED, null))
+    }
+    @Test fun `an audio output fault retries but never pins the song to the fallback`() {
+        assertEquals(
+            listOf(Recovery.Retry, Recovery.Retry, Recovery.None),
+            sequence(PlaybackException.ERROR_CODE_AUDIO_TRACK_INIT_FAILED, null, fallbackAllowed = true).take(3)
+        )
     }
 }

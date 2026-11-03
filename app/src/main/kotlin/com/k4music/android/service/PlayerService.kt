@@ -484,7 +484,7 @@ class PlayerService : InvincibleService(), Player.Listener, PlaybackStatsListene
 
             mediaSession.isActive = false
             mediaSession.release()
-            cache.release()
+            // The cache is a process singleton (see createCache): downloads still use it after this service dies.
 
             if (isAtLeastAndroid6) {
                 audioDeviceCallback?.let {
@@ -619,7 +619,7 @@ class PlayerService : InvincibleService(), Player.Listener, PlaybackStatsListene
         val position = player.currentPosition.coerceAtLeast(0L)
         playbackRecoveryJob?.cancel()
         playbackRecoveryJob = coroutineScope.launch(Dispatchers.Main) {
-            delay(RECOVERY_DELAY_MS)
+            delay(if (recovery == Recovery.Fallback) RECOVERY_DELAY_MS else RECOVERY_DELAY_MS * 4)
             if (player.currentMediaItem?.mediaId != id || player.playerError == null) return@launch
             player.seekTo(position)
             player.prepare()
@@ -1421,8 +1421,11 @@ class PlayerService : InvincibleService(), Player.Listener, PlaybackStatsListene
                 if (!exists()) mkdir()
             }
 
-            SimpleCache(directory, cacheEvictor, createDatabaseProvider(context))
+            synchronized(sharedCaches) {
+                sharedCaches.getOrPut(directoryName) { SimpleCache(directory, cacheEvictor, createDatabaseProvider(context)) }
+            }
         }
+        private val sharedCaches = HashMap<String, SimpleCache>()
 
         @Suppress("CyclomaticComplexMethod")
         fun createYouTubeDataSourceResolverFactory(
@@ -1532,7 +1535,7 @@ class PlayerService : InvincibleService(), Player.Listener, PlaybackStatsListene
             if (fullyCached) {
                 dataSpec // Completed audio stays playable offline, independent of source-pin expiry.
             } else if (!dataSpec.isLocal && fallbackOn && StreamFallback.isForced(mediaId)) {
-                saavnFallback() ?: throw UnplayableException()
+                saavnFallback() ?: throw (if (chunkLength == null) IOException("No playable stream") else UnplayableException())
             } else if (
                 dataSpec.isLocal || (
                     chunkLength != null && cache.isCached(
@@ -1557,7 +1560,7 @@ class PlayerService : InvincibleService(), Player.Listener, PlaybackStatsListene
                         // K4Audio: JioSaavn-backed item — resolve its CDN url once
                         // and remember it, skipping the YouTube/yt-dlp path entirely.
                         val cdn = runBlocking(Dispatchers.IO) { resolveSaavnStream(mediaId, PlayerPreferences.audioQuality.saavn) }
-                            ?: throw UnplayableException()
+                            ?: throw (if (chunkLength == null) IOException("No playable stream") else UnplayableException())
                         val mediaItem = runCatching { runBlocking(Dispatchers.IO) { findMediaItem(mediaId) } }.getOrNull()
                         val saavnLen: Long? = null // Avoid a blocking HEAD request before playback.
                         transaction {
@@ -1626,7 +1629,7 @@ class PlayerService : InvincibleService(), Player.Listener, PlaybackStatsListene
                         if (info?.id != null && info.id != mediaId) throw VideoIdMismatchException()
                         val format = info?.formats?.firstOrNull { it.formatId == info.formatId }
                         uri = (info?.url?.takeIf { it.isNotBlank() } ?: format?.url?.takeIf { it.isNotBlank() })?.toUri()
-                            ?: return@run (if (fallbackOn) saavnFallback() else null) ?: throw UnplayableException()
+                            ?: return@run (if (fallbackOn) saavnFallback() else null) ?: throw (if (chunkLength == null) IOException("No playable stream") else UnplayableException())
                         formatId = info?.formatId
                         bitrate = format?.abr?.let { it * 1000 }?.toLong()
                         contentLength = info?.fileSize?.takeIf { it > 0L }

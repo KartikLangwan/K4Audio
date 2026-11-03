@@ -6,6 +6,7 @@ import com.k4music.desktop.data.Db
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import com.k4music.providers.utils.useCancellable
@@ -85,11 +86,13 @@ object Downloads {
                 previous?.join() // A cancelled attempt finishes cleanup before its replacement starts.
                 permits.withPermit {
                     if (file(track.id) == null) {
-                        // One retry: a refused url is rejected in fetch, so the second run takes the next source.
-                        try { fetch(track) } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (e: Exception) {
-                            // Second source: YouTube (and its other clients) failed, so go straight to JioSaavn.
-                            if (com.k4music.desktop.prefs.Settings.smartFallback && !track.isSaavn) com.k4music.desktop.k4.StreamFallback.force(track.id)
-                            fetch(track)
+                        // A refused or dropped url is rejected in fetch, so the second run gets a fresh YouTube link;
+                        // only then JioSaavn. The first error stays the one shown.
+                        try { fetch(track) } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (first: Exception) {
+                            try { delay(1_000); fetch(track) } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (_: Exception) {
+                                if (com.k4music.desktop.prefs.Settings.smartFallback && !track.isSaavn) com.k4music.desktop.k4.StreamFallback.force(track.id)
+                                try { fetch(track) } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (_: Exception) { throw first }
+                            }
                         }
                     } else _done.update { it + track.id }
                 }

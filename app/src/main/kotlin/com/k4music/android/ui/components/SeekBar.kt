@@ -97,7 +97,7 @@ fun SeekBar(
         else scrubbingPosition?.let { (it + delta).coerceIn(range) }
     }
     val onSeekEnd = {
-        scrubbingPosition?.let(binder.player::seekTo)
+        scrubbingPosition?.let { binder.player.seekTo(it); if (binder.player.playbackState == androidx.media3.common.Player.STATE_IDLE) binder.player.prepare() }
         scrubbingPosition = null
     }
 

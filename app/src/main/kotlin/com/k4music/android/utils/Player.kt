@@ -25,7 +25,7 @@ inline val Timeline.mediaItems: List<MediaItem>
     get() = windows.map { it.mediaItem }
 
 val Player.shouldBePlaying: Boolean
-    get() = !(playbackState == Player.STATE_ENDED || !playWhenReady)
+    get() = !(playbackState == Player.STATE_ENDED || playbackState == Player.STATE_IDLE || !playWhenReady)
 
 fun Player.removeMediaItems(range: IntRange) = removeMediaItems(range.first, range.last + 1)
 

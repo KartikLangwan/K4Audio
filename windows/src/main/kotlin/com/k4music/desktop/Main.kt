@@ -87,7 +87,7 @@ fun main(args: Array<String>) {
             }
         }
     }
-    val devCheck = args.any { it in setOf("--selftest", "--screenshots", "--uitest") }
+    val devCheck = args.any { it in setOf("--selftest", "--screenshots", "--uitest", "--dltest") }
     if (!devCheck && !SingleInstance.acquire(args, incoming)) exitProcess(0)
     // Nothing was running to close: do not start the app either.
     if (QUIT_ARG in args) exitProcess(0)
@@ -359,7 +359,8 @@ private fun devMode(args: Array<String>, player: PlayerController) {
     val selftest = arg("--selftest")
     val shots = arg("--screenshots")
     val uitest = arg("--uitest")
-    if (selftest == null && shots == null && uitest == null) return
+    val dltest = arg("--dltest")
+    if (selftest == null && shots == null && uitest == null && dltest == null) return
     val sample = kotlinx.coroutines.runBlocking {
         val youtube = com.k4music.providers.innertube.Innertube.searchPage(
             com.k4music.providers.innertube.models.bodies.SearchBody(
@@ -375,6 +376,23 @@ private fun devMode(args: Array<String>, player: PlayerController) {
         )?.getOrNull()?.items?.firstNotNullOfOrNull { it.toTrack() }
         val saavn = com.k4music.desktop.k4.searchSaavnSongs("Kesariya Arijit Singh").firstOrNull()?.toTrack()
         listOfNotNull(youtube, second, saavn)
+    }
+    if (dltest != null) {
+        // Downloads every sample song and plays the saved files back from disk.
+        dltest.mkdirs()
+        val report = StringBuilder()
+        for (track in sample) {
+            com.k4music.desktop.player.Downloads.download(track)
+            val ok = kotlinx.coroutines.runBlocking {
+                kotlinx.coroutines.withTimeoutOrNull(120_000) {
+                    while (!com.k4music.desktop.player.Downloads.isDownloaded(track.id) && track.id !in com.k4music.desktop.player.Downloads.failed.value) kotlinx.coroutines.delay(300)
+                    com.k4music.desktop.player.Downloads.isDownloaded(track.id)
+                } == true
+            }
+            val file = com.k4music.desktop.player.Downloads.file(track.id)
+            report.appendLine("${track.title}: downloaded=$ok size=${file?.length()} error=${com.k4music.desktop.player.Downloads.failed.value[track.id]?.message}")
+        }
+        java.io.File(dltest, "dltest.txt").writeText(report.toString())
     }
     var ok = true
     if (selftest != null) ok = DevTools.selftest(selftest, player, sample)

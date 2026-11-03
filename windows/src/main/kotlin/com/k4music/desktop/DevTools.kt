@@ -211,12 +211,22 @@ object DevTools {
                 while (player.position.value < deepAt + 3 || player.state.value.current?.id != track.id) kotlinx.coroutines.delay(100)
                 true
             } == true
+            // Clicks in the middle of the bar, back to back: playback must resume each time, not stop.
+            var mid = advanced && duration > 30
+            if (mid) for (fraction in listOf(0.5, 0.25, 0.6)) {
+                val at = duration * fraction
+                player.seek(at)
+                mid = mid && withTimeoutOrNull(25_000) {
+                    while (player.position.value < at + 3 || player.state.value.current?.id != track.id) kotlinx.coroutines.delay(100)
+                    true
+                } == true
+            }
             val line = "${track.id} '${track.title}': resolve=${stream.getOrNull()?.source ?: stream.exceptionOrNull()?.message} " +
-                "in ${resolvedIn}ms, firstSound=${firstSoundMs}ms, plays=$advanced, deep=$deep (pos=${"%.1f".format(player.position.value)}s of ${duration.toInt()}s, " +
+                "in ${resolvedIn}ms, firstSound=${firstSoundMs}ms, plays=$advanced, deep=$deep, midSeeks=$mid (pos=${"%.1f".format(player.position.value)}s of ${duration.toInt()}s, " +
                 "source=${player.state.value.source}, error=${player.state.value.error})"
             AppLog.i("SelfTest", line)
             report.appendLine(line)
-            ok = ok && advanced && deep
+            ok = ok && advanced && deep && mid
         }
         // A song plays to its real end, then the next one starts (no early cut, no skip).
         if (tracks.size >= 2) {

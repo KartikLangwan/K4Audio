@@ -1397,6 +1397,8 @@ class PlayerService : InvincibleService(), Player.Listener, PlaybackStatsListene
         private const val DEFAULT_CACHE_DIRECTORY = "exoplayer"
         private const val DEFAULT_CHUNK_LENGTH = 512 * 1024L
         private const val YT_DLP_TIMEOUT_MS = 15_000L
+        /** A download is not waiting to start playing: give a slow yt-dlp (cold Python, weak phone) time to finish. */
+        private const val YT_DLP_DOWNLOAD_TIMEOUT_MS = 45_000L
         private const val RECOVERY_DELAY_MS = 300L
         private val ytDlpScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
@@ -1548,7 +1550,10 @@ class PlayerService : InvincibleService(), Player.Listener, PlaybackStatsListene
                     )
                     )
             ) {
-                dataSpec
+                // Cached bytes only cover one chunk: end the read at the cached edge. Unbounded, the next
+                // uncached byte would be fetched with this bare-id uri (file not found, playback dies after a seek).
+                if (dataSpec.isLocal || chunkLength == null) dataSpec
+                else dataSpec.subrange(0L, if (dataSpec.length > 0L) dataSpec.length.coerceAtMost(chunkLength) else chunkLength)
             } else {
                 uriCache[mediaId]?.let { cachedUri ->
                     dataSpec
@@ -1611,7 +1616,7 @@ class PlayerService : InvincibleService(), Player.Listener, PlaybackStatsListene
                             // The chosen streaming quality's itags first, so YouTube songs keep one steady quality.
                             val format = (PlayerPreferences.audioQuality.youtubeItags.map { it.toString() } + "bestaudio" + "best").joinToString("/")
                             val job = ytDlpScope.async { Dependencies.runDownload(mediaId, format) }
-                            runBlocking { withTimeoutOrNull(YT_DLP_TIMEOUT_MS) { job.await() } }
+                            runBlocking { withTimeoutOrNull(if (chunkLength == null) YT_DLP_DOWNLOAD_TIMEOUT_MS else YT_DLP_TIMEOUT_MS) { job.await() } }
                                 ?: error("yt-dlp timed out for $mediaId")
                         }.mapCatching {
                             YouTubeDLResponse.fromString(it)

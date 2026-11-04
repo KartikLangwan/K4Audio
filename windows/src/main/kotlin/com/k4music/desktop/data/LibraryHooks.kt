@@ -89,7 +89,8 @@ private class Radio(private val seed: RadioSeed) {
 
     suspend fun next(): List<Track> {
         if (started && continuation == null) return emptyList()
-        val page = if (!started) {
+        // A failed fetch (network blip) changes nothing: the next call simply tries again.
+        val page = (if (!started) {
             Innertube.nextPage(
                 NextBody(videoId = seed.videoId, playlistId = playlistId, params = params, playlistSetVideoId = playlistSetVideoId)
             )?.getOrNull()?.also { result ->
@@ -97,9 +98,9 @@ private class Radio(private val seed: RadioSeed) {
                 params = result.params
                 playlistSetVideoId = result.playlistSetVideoId
             }?.itemsPage
-        } else Innertube.nextPage(ContinuationBody(continuation = continuation!!))?.getOrNull()
+        } else Innertube.nextPage(ContinuationBody(continuation = continuation!!))?.getOrNull()) ?: return emptyList()
         started = true
-        continuation = page?.continuation?.takeUnless { it == continuation }
-        return page?.items.orEmpty().mapNotNull { it.toTrack() }
+        continuation = page.continuation?.takeUnless { it == continuation }
+        return page.items.orEmpty().mapNotNull { it.toTrack() }
     }
 }

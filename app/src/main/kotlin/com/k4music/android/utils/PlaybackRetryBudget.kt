@@ -5,10 +5,12 @@ import androidx.media3.common.PlaybackException
 /** Terminal-error recovery is bounded per track; a successful prepare cannot reset it. */
 internal class PlaybackRetryBudget(private val limit: Int = 2) {
     private var mediaId: String? = null
-    private var attempts = 0
+    var attempts = 0
+        private set
     fun onMediaTransition(id: String?) {
         if (id != mediaId) { mediaId = id; attempts = 0 }
     }
+    fun reset() { mediaId = null; attempts = 0 }
     fun tryAcquire(id: String): Boolean {
         onMediaTransition(id)
         if (attempts >= limit) return false
@@ -16,6 +18,16 @@ internal class PlaybackRetryBudget(private val limit: Int = 2) {
         return true
     }
 }
+
+/**
+ * Innertube's direct links serve about the first MiB (a minute of audio) and refuse the rest
+ * (HTTP 403, measured on the iOS client). Enough to start a song at once while yt-dlp gets the full link.
+ */
+const val DIRECT_STREAM_LIMIT = 1024 * 1024L
+
+/** How much to ask of a direct link at [position]: one chunk, never past its limit or the song's end. */
+fun directRangeLength(position: Long, remaining: Long, chunk: Long): Long =
+    minOf(chunk, DIRECT_STREAM_LIMIT - position, remaining).coerceAtLeast(1L)
 
 internal fun isRecoverablePlaybackFailure(code: Int, httpStatus: Int?): Boolean =
     if (httpStatus != null) httpStatus in setOf(403, 408, 410, 416, 429, 500, 502, 503, 504)

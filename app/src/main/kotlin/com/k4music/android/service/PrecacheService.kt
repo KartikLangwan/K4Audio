@@ -246,6 +246,7 @@ class PrecacheService : DownloadService(
                     ) {
                         if (download.state == Download.STATE_COMPLETED) {
                             val id = download.request.id
+                            DownloadPins.add(id)
                             val length = download.contentLength.takeIf { it > 0 } ?: download.bytesDownloaded
                             if (length > 0) {
                                 val mutations = ContentMetadataMutations()
@@ -260,6 +261,7 @@ class PrecacheService : DownloadService(
                         }
                         if (download.state == Download.STATE_FAILED) {
                             val id = download.request.id
+                            DownloadPins.remove(id) // a retry pins it again; failed bytes must stay evictable
                             mutableDownloadProgress.update { it + (id to DownloadProgress(id, 0, Download.STATE_FAILED)) }
                         }
                         publishProgress()
@@ -270,6 +272,7 @@ class PrecacheService : DownloadService(
                         downloadManager: DownloadManager,
                         download: Download
                     ) {
+                        DownloadPins.remove(download.request.id)
                         mutableDownloadProgress.update { it - download.request.id }
                         publishProgress()
                         downloadQueue.trySend(downloadManager)
@@ -327,6 +330,7 @@ class PrecacheService : DownloadService(
             val appContext = context.applicationContext
             coroutineScope.launch {
                 ids.forEach { id ->
+                    DownloadPins.remove(id)
                     runCatching { cache?.removeResource(id) }
                     runCatching {
                         DownloadService.sendRemoveDownload(appContext, PrecacheService::class.java, id, false)
@@ -342,13 +346,14 @@ class PrecacheService : DownloadService(
                 runCatching {
                     DownloadService.sendRemoveAllDownloads(appContext, PrecacheService::class.java, false)
                 }
-                ids.forEach { runCatching { cache?.removeResource(it) } }
+                ids.forEach { DownloadPins.remove(it); runCatching { cache?.removeResource(it) } }
                 mutableDownloadProgress.update { emptyMap() }
             }
         }
 
         fun scheduleCache(context: Context, mediaItem: MediaItem) {
             if (mediaItem.isLocal) return
+            DownloadPins.add(mediaItem.mediaId) // safe from cache cleanup from the first byte
 
             val downloadRequest = DownloadRequest
                 .Builder(

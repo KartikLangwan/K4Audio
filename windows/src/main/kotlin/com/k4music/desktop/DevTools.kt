@@ -233,13 +233,15 @@ object DevTools {
             player.clearQueue().join()
             player.play(tracks.take(2)).join()
             withTimeoutOrNull(25_000) { while (player.position.value < 1.0) kotlinx.coroutines.delay(100) }
+            withTimeoutOrNull(60_000) { while (com.k4music.desktop.player.StreamCache.find(tracks[1].id) == null) kotlinx.coroutines.delay(200) }
             val duration = player.state.value.durationSeconds
             player.seek(duration - 6)
             val next = withTimeoutOrNull(40_000) {
                 while (player.state.value.index != 1 || player.position.value < 1.0) kotlinx.coroutines.delay(100)
                 true
             } == true
-            val line = "end-of-song: '${tracks[0].title}' finished and '${tracks[1].title}' started = $next"
+            // While the first song plays, the next one lands on disk; it must then start and skip from there.
+            val line = "end-of-song: '${tracks[0].title}' finished and '${tracks[1].title}' started = $next, from cache=${com.k4music.desktop.player.StreamCache.find(tracks[1].id) != null}"
             AppLog.i("SelfTest", line)
             report.appendLine(line)
             ok = ok && next

@@ -71,12 +71,13 @@ object StreamFallback {
 
     fun drop(id: String) = prefs.edit().remove(id).remove("t:$id").apply()
 
-    fun resolved(id: String, url: String?) {
+    /** [pinMs]: how long the pin should hold, when shorter than the usual day. */
+    fun resolved(id: String, url: String?, pinMs: Long? = null) {
         forced.remove(id)
         if (url == null) return
         // ponytail: wholesale reset at 1000 pins (2 keys each); a dropped song just re-resolves via YouTube.
         if (prefs.all.size >= 2000) prefs.edit().clear().apply()
-        prefs.edit().putString(id, url).putLong("t:$id", System.currentTimeMillis()).apply()
+        prefs.edit().putString(id, url).putLong("t:$id", System.currentTimeMillis() - (pinMs?.let { PIN_TTL_MS - it } ?: 0L)).apply()
     }
 
     private const val PIN_TTL_MS = 24 * 60 * 60 * 1000L

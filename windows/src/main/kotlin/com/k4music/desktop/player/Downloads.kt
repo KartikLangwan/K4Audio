@@ -87,10 +87,12 @@ object Downloads {
                 permits.withPermit {
                     if (file(track.id) == null) {
                         // A refused or dropped url is rejected in fetch, so the second run gets a fresh YouTube link;
-                        // only then JioSaavn. The first error stays the one shown.
+                        // only then JioSaavn, and not for a lost connection (it says nothing about the song).
+                        // The first error stays the one shown.
                         try { fetch(track) } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (first: Exception) {
-                            try { delay(1_000); fetch(track) } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (_: Exception) {
-                                if (com.k4music.desktop.prefs.Settings.smartFallback && !track.isSaavn) com.k4music.desktop.k4.StreamFallback.force(track.id)
+                            try { delay(1_000); fetch(track) } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (second: Exception) {
+                                if (second is java.io.IOException) delay(5_000)
+                                else if (com.k4music.desktop.prefs.Settings.smartFallback && !track.isSaavn) com.k4music.desktop.k4.StreamFallback.force(track.id)
                                 try { fetch(track) } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (_: Exception) { throw first }
                             }
                         }
@@ -161,7 +163,7 @@ object Downloads {
     private suspend fun fetch(track: Track) {
         _transfers.update { it + (track.id to Transfer(track, Phase.Resolving)) }
         Db.library.insert(track)
-        val stream = resolver.resolve(track)
+        val stream = resolver.resolve(track, patient = true)
         val request = Request.Builder().url(stream.url).apply {
             stream.headers.forEach { (k, v) -> header(k, v) }
             // YouTube throttles a request without a Range header to ~30 KB/s; an open range comes at

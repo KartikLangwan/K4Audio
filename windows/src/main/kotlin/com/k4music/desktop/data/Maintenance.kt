@@ -199,9 +199,10 @@ object Maintenance {
      */
     private val ytDlpLock = java.util.concurrent.locks.StampedLock()
 
-    /** Runs [block] (which starts yt-dlp) while no update is replacing it; blocking, interruptible. */
+    /** Runs [block] (which starts yt-dlp) while no update is replacing it. An update must not hold songs up: they fall back. */
     fun <T> usingYtDlp(block: () -> T): T {
-        val stamp = ytDlpLock.readLockInterruptibly()
+        val stamp = ytDlpLock.tryReadLock(5, TimeUnit.SECONDS)
+        if (stamp == 0L) throw java.io.IOException("yt-dlp is updating")
         try { return block() } finally { ytDlpLock.unlockRead(stamp) }
     }
 

@@ -12,7 +12,6 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.runInterruptible
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.SerialName
@@ -25,15 +24,15 @@ import java.util.concurrent.TimeUnit
 /** Where a resolved stream came from; decides how a later failure is handled. */
 enum class StreamSource { Local, YtDlp, Saavn }
 
-/** [temporary]: a stand-in while YouTube was slow; not cached, so the next play tries YouTube again. */
+/** [temporary]: a stand-in while YouTube was slow; not kept, so the next play tries YouTube again. */
 data class Stream(val url: String, val source: StreamSource, val headers: Map<String, String> = emptyMap(), val temporary: Boolean = false)
 
 /** Nothing could serve this song (not a connection problem). */
 class UnplayableException(message: String) : Exception(message)
 
 /**
- * yt-dlp (30 s deadline) -> the same song on JioSaavn (Smart fallback) -> unplayable.
- * Resolved urls are cached per song for 15 minutes.
+ * Downloaded or cached file -> yt-dlp (30 s deadline) -> the same song on JioSaavn (Smart fallback) -> unplayable.
+ * Resolved urls are kept per song for a few hours; one that gets refused is dropped at once.
  *
  * No direct Innertube url step (Android's first step): on PC those urls play the first
  * megabyte and are then refused (HTTP 403), which cut songs off half way.
@@ -44,44 +43,78 @@ class StreamResolver {
     fun forget(id: String) { cache.remove(id) }
     fun close() { background.cancel() }
 
+    /** Saved files that would not play: this session goes online for them instead. */
+    private val badFiles = ConcurrentHashMap.newKeySet<String>()
+
     /** The current [Stream] of [track] was refused; the next resolve picks the next source. */
     fun reject(track: Track, stream: Stream) {
         forget(track.id)
+        if (!track.isLocal && File(stream.url).isFile) {
+            badFiles.add(stream.url)
+            StreamCache.drop(track.id, File(stream.url))
+        }
         if (stream.source == StreamSource.Saavn && !track.isSaavn) StreamFallback.drop(track.id)
     }
 
-    /** Resolves running right now, by song: a hover prefetch and the click share one yt-dlp run. */
-    private val inFlight = ConcurrentHashMap<String, kotlinx.coroutines.Deferred<Stream>>()
+    /** A resolve running right now, shared by whoever wants that song; the last one to lose interest stops it. */
+    private class Flight(val job: kotlinx.coroutines.Deferred<Stream>) { var waiters = 0 }
+    private val inFlight = ConcurrentHashMap<String, Flight>()
     private val background = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + Dispatchers.IO)
-    /** At most two speculative yt-dlp runs at once, so hovering a long list stays cheap. */
-    private val prefetchSlots = kotlinx.coroutines.sync.Semaphore(2)
 
-    suspend fun resolve(track: Track): Stream {
+    /** [patient]: for keeping the file (downloads): waits for the real source instead of a quick stand-in. */
+    suspend fun resolve(track: Track, patient: Boolean = false): Stream {
+        val key = if (patient) "${track.id}#patient" else track.id
         var started = false
-        // Lazy, then started after it sits in the map: a handler that ran inside computeIfAbsent could remove its own key.
-        val job = inFlight.computeIfAbsent(track.id) { _ ->
-            started = true
-            background.async(start = kotlinx.coroutines.CoroutineStart.LAZY) { resolveNow(track) }
-        }
+        // Lazy, then started after it sits in the map: a handler that ran inside compute could remove its own key.
+        val flight = inFlight.compute(key) { _, running ->
+            (running ?: Flight(background.async(start = kotlinx.coroutines.CoroutineStart.LAZY) { resolveNow(track, patient) }).also { started = true })
+                .also { it.waiters++ }
+        }!!
         if (started) {
-            job.invokeOnCompletion { inFlight.remove(track.id, job) }
-            job.start()
+            flight.job.invokeOnCompletion { inFlight.remove(key, flight) }
+            flight.job.start()
         }
-        return try { job.await() } finally { if (job.isCompleted) inFlight.remove(track.id, job) }
+        try {
+            return flight.job.await()
+        } finally {
+            // Skipped past: nobody wants this song now, so its yt-dlp stops rather than slowing the next one.
+            var abandoned = false
+            inFlight.compute(key) { _, current ->
+                if (current === flight && --flight.waiters == 0 && !flight.job.isCompleted) { abandoned = true; null } else current
+            }
+            if (abandoned) flight.job.cancel() // outside compute: its completion handler touches the same map
+        }
     }
 
-    /** Resolves [track] ahead of a likely click (hover, next in queue); errors are ignored. */
-    fun prefetch(track: Track) {
-        if (track.isLocal || cache[track.id]?.let { System.currentTimeMillis() - it.at < TTL_MS } == true || inFlight.containsKey(track.id)) return
-        if (!prefetchSlots.tryAcquire()) return // Drop speculation instead of accumulating an unbounded hover backlog.
-        background.launch {
-            try { runCatching { resolve(track) } } finally { prefetchSlots.release() }
+    private var precacheJob: kotlinx.coroutines.Job? = null
+
+    /**
+     * Saves [tracks] to the disk cache one after the other (the song playing, then the next), replacing
+     * any earlier request: they then start at once, can be skipped through and survive a lost connection.
+     */
+    @Synchronized
+    fun precache(tracks: List<Track>) {
+        precacheJob?.cancel()
+        precacheJob = background.launch {
+            kotlinx.coroutines.delay(PRECACHE_DELAY_MS) // the song just started comes first
+            for (track in tracks) {
+                if (track.isLocal || Downloads.file(track.id) != null || StreamCache.find(track.id) != null) continue
+                try {
+                    // Patient: what is kept is the real source, never the quick stand-in.
+                    val stream = resolve(track, patient = true)
+                    if (!File(stream.url).isFile) StreamCache.store(track.id, stream)
+                } catch (error: kotlinx.coroutines.CancellationException) {
+                    throw error
+                } catch (error: Exception) {
+                    AppLog.i(TAG, "Could not cache ${track.id} ahead: ${error.message}")
+                }
+            }
         }
     }
 
-    private suspend fun resolveNow(track: Track): Stream = withContext(Dispatchers.IO) {
+    private suspend fun resolveNow(track: Track, patient: Boolean): Stream = withContext(Dispatchers.IO) {
         // A downloaded song always plays from disk: offline-safe and instant.
-        Downloads.file(track.id)?.let { return@withContext Stream(it.absolutePath, StreamSource.Local) }
+        Downloads.file(track.id)?.takeIf { it.absolutePath !in badFiles }?.let { return@withContext Stream(it.absolutePath, StreamSource.Local) }
         if (track.isLocal) {
             val file = File(track.localPath)
             if (!file.isFile) throw UnplayableException("File not found: ${file.name}")
@@ -95,6 +128,10 @@ class StreamResolver {
         if (fallbackOn && StreamFallback.isForced(track.id)) {
             return@withContext saavnFallback(track) ?: throw UnplayableException("No JioSaavn match")
         }
+        StreamCache.find(track.id)?.takeIf { (file, _) -> file.absolutePath !in badFiles }?.let { (file, source) ->
+            file.setLastModified(System.currentTimeMillis()) // just played: cleanup takes others first
+            return@withContext Stream(file.absolutePath, source)
+        }
         cache[track.id]?.takeIf { System.currentTimeMillis() - it.at < TTL_MS }?.let { return@withContext it.stream }
 
         val pinned = if (fallbackOn) StreamFallback.url(track.id) else null // read once: another thread may drop it
@@ -106,7 +143,7 @@ class StreamResolver {
             else -> {
                 val youtube = when {
                     youtubeBlocked() -> null // don't keep knocking while YouTube is blocking this network
-                    fallbackOn -> youtubeOrQuickFallback(track)
+                    fallbackOn && !patient -> youtubeOrQuickFallback(track)
                     else -> ytDlp(track.id)
                 }
                 // A blocked network is not this song's fault: play JioSaavn for now, YouTube again later.
@@ -126,30 +163,46 @@ class StreamResolver {
      * is looked up on JioSaavn meanwhile and whichever is ready first plays, instead of waiting out
      * yt-dlp's full deadline.
      */
-    private suspend fun youtubeOrQuickFallback(track: Track): Stream? = kotlinx.coroutines.coroutineScope {
-        val yt = async { ytDlp(track.id) }
-        val quick = kotlinx.coroutines.withTimeoutOrNull(SLOW_YOUTUBE_MS) { yt.await() }
-        if (quick != null || yt.isCompleted) return@coroutineScope quick ?: yt.await()
-        AppLog.w(TAG, "YouTube is slow for ${track.id}; trying JioSaavn meanwhile")
-        val saavn = saavnFallback(track, remember = false)
-        if (saavn != null && !yt.isCompleted) return@coroutineScope saavn.copy(temporary = true).also { background.launch { runCatching { yt.await() }.getOrNull()?.let { cache[track.id] = Cached(it, System.currentTimeMillis()) } } }
-        yt.await() ?: saavn?.copy(temporary = true)
+    private suspend fun youtubeOrQuickFallback(track: Track): Stream? {
+        // Not a child of this call: a coroutine scope would wait for yt-dlp before answering, which is the whole point lost.
+        val yt = background.async { ytDlp(track.id) }
+        try {
+            val quick = kotlinx.coroutines.withTimeoutOrNull(SLOW_YOUTUBE_MS) { yt.await() }
+            if (quick != null || yt.isCompleted) return quick ?: yt.await()
+            AppLog.w(TAG, "YouTube is slow for ${track.id}; trying JioSaavn meanwhile")
+            val saavn = saavnFallback(track, remember = false)
+            if (saavn != null && !yt.isCompleted) {
+                // The stand-in plays now; YouTube's answer is kept for the next time.
+                background.launch { runCatching { yt.await() }.getOrNull()?.let { cache[track.id] = Cached(it, System.currentTimeMillis()) } }
+                return saavn.copy(temporary = true)
+            }
+            return yt.await() ?: saavn?.copy(temporary = true)
+        } catch (error: kotlinx.coroutines.CancellationException) {
+            yt.cancel()
+            throw error
+        }
     }
 
     /** Runs the bundled yt-dlp.exe with QuickJS for YouTube's JS challenge. Null on failure/timeout. */
-    private suspend fun ytDlp(videoId: String): Stream? =
+    private suspend fun ytDlp(videoId: String): Stream? = try {
         runInterruptible(Dispatchers.IO) {
             com.k4music.desktop.data.Maintenance.usingYtDlp {
                 // "Sign in to confirm you're not a bot" is often specific to yt-dlp's default web client:
-                // try the clients that need no sign-in once before treating the network as blocked.
+                // try the other clients once before treating the network as blocked.
                 val blocked = java.util.concurrent.atomic.AtomicBoolean(false)
-                val alt = "youtube:player_client=tv,android_vr,web_safari"
-                // The client that worked last time goes first, so a bot-checked default client costs one run, not one per song.
-                if (useAltClient) ytDlpNow(videoId, alt, blocked, markBlocked = true)
-                else ytDlpNow(videoId, null, blocked)
-                    ?: if (blocked.get()) ytDlpNow(videoId, alt, blocked, markBlocked = true)?.also { useAltClient = true } else null
+                // Measured 2026-11-05: android_vr's links are refused past the first MiB and tv fails; these serve the whole song.
+                val alt = "youtube:player_client=android_sdkless,web_embedded"
+                // The client that worked last time goes first, so a bot-checked client costs one run, not one per song.
+                val first = if (useAltClient) alt else null
+                val second = if (useAltClient) null else alt
+                ytDlpNow(videoId, first, blocked)
+                    ?: if (blocked.get()) ytDlpNow(videoId, second, blocked, markBlocked = true)?.also { useAltClient = second != null } else null
             }
         }
+    } catch (error: java.io.IOException) {
+        AppLog.w(TAG, "yt-dlp unavailable: ${error.message}")
+        null
+    }
 
     private fun ytDlpNow(videoId: String, extractorArgs: String?, blocked: java.util.concurrent.atomic.AtomicBoolean, markBlocked: Boolean = false): Stream? {
         val exe = AppPaths.tools.resolve("yt-dlp/yt-dlp.exe")
@@ -283,7 +336,8 @@ class StreamResolver {
 
     private companion object {
         const val TAG = "StreamResolver"
-        const val TTL_MS = 15 * 60 * 1000L
+        const val TTL_MS = 3 * 60 * 60 * 1000L
+        const val PRECACHE_DELAY_MS = 3_000L
         const val SLOW_YOUTUBE_MS = 7_000L
         const val YT_DLP_TIMEOUT_S = 30L // a cold start (unpack + JS challenge) can pass 15 s and was killed
         const val BLOCK_PAUSE_MS = 10 * 60 * 1000L

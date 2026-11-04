@@ -134,8 +134,13 @@ fun main(args: Array<String>) {
     if (!devCheck) Thread({
         runCatching { Updater.cleanup() }
         runCatching { com.k4music.desktop.player.Downloads.sweepPartials() }
+        runCatching { com.k4music.desktop.player.StreamCache.trim() }
         Thread.sleep(60_000)
-        runCatching { com.k4music.desktop.data.Maintenance.updateYtDlpIfDue() }
+        // Not only at start: a PC that stays on must not end up with a yt-dlp YouTube has outrun.
+        while (true) {
+            runCatching { com.k4music.desktop.data.Maintenance.updateYtDlpIfDue() }
+            Thread.sleep(6 * 60 * 60 * 1000L)
+        }
     }, "k4-housekeeping").apply { isDaemon = true }.start()
     // Warm yt-dlp once (Windows scans a program on its first launch), so the first song starts faster.
     Thread({ Thread.sleep(5_000); com.k4music.desktop.data.Maintenance.ytDlpVersion() }, "k4-warmup").apply { isDaemon = true }.start()

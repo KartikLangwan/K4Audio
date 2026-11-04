@@ -95,14 +95,32 @@ class PlayerController(private val mpv: Mpv, private val resolver: StreamResolve
     /** The radio feeding the queue, if the queue came from one (Android's YouTubeRadio). */
     private var radio: (suspend () -> List<Track>)? = null
     private var radioJob: Job? = null
+    private var radioRequest = 0L
+    /** What the listener wants, whatever is happening: loads and retries follow this, so a pause always holds. */
+    @Volatile private var wantPlaying = false
+    /** A failure is being dealt with (waiting for a retry or for the network). */
+    private var recovering = false
+    /** mpv has the file open, so it can seek; until then a seek waits in [pendingSeek]. */
+    private var fileReady = false
+    private var pendingSeek: Double? = null
+    /** A seek is under way: position ticks still in the pipe belong to where it was. */
+    private var seeking = false
+    /** Playback since the last failure; enough of it earns the retries back. */
+    private var stableMs = 0L
+    private var audioRetries = 0
+    private var lastLoadAt = 0L
 
     init {
         // Volume 0 while not muted is almost always an accident and makes the app seem broken.
         if (Settings.volume == 0 && !Settings.muted) Settings.volume = 50
-        mpv.setVolume(Settings.volume)
-        mpv.setMuted(Settings.muted)
-        mpv.setAudioDevice(Settings.audioDevice)
-        applyEffects()
+        // On the serial owner: mpv may still be loading, and the window must not wait for it.
+        scope.launch {
+            mpv.setVolume(Settings.volume)
+            mpv.setMuted(Settings.muted)
+            mpv.setAudioDevice(Settings.audioDevice)
+            mpv.setSpeed(Settings.speed.coerceIn(0.25f, 3f))
+            mpv.setAudioFilters(AudioEffects.chain())
+        }
         mpv.setListener(object : Mpv.Listener {
             override fun onPosition(seconds: Double) {
                 // mpv reports every decoded audio chunk (dozens a second); five updates a second keep
@@ -112,6 +130,7 @@ class PlayerController(private val mpv: Mpv, private val resolver: StreamResolve
                 dispatchEvent { onTick(seconds) }
             }
             private fun onTick(seconds: Double) {
+                if (seeking) return
                 // SponsorBlock: jump over a non-music segment the moment playback enters it.
                 skipSegments.firstOrNull { seconds >= it.first && seconds < it.second - 0.5 }?.let { (_, end) ->
                     // Remember where playback is going: a skip to the very end must not read as a cut-off stream.
@@ -121,7 +140,17 @@ class PlayerController(private val mpv: Mpv, private val resolver: StreamResolve
                     return
                 }
                 val step = seconds - lastPosition
-                if (step > 0 && step < 1.5 && _state.value.playing) listenedMs += (step * 1000).toLong()
+                if (step > 0 && step < 1.5 && _state.value.playing) {
+                    listenedMs += (step * 1000).toLong()
+                    stableMs += (step * 1000).toLong()
+                    if (stableMs >= RETRIES_BACK_AFTER_MS) {
+                        // A long song may meet several network drops: each one gets the full recovery.
+                        retries.reset()
+                        fallbacks.reset()
+                        audioRetries = 0
+                        stableMs = 0
+                    }
+                }
                 lastPosition = seconds
                 _position.value = seconds
                 // Keep the saved resume point fresh, so a crash or power cut resumes near here.
@@ -133,11 +162,13 @@ class PlayerController(private val mpv: Mpv, private val resolver: StreamResolve
             override fun onDuration(seconds: Double) = dispatchEvent { _state.update { it.copy(durationSeconds = seconds) } }
             override fun onPaused(paused: Boolean) = dispatchEvent { _state.update { it.copy(playing = !paused) } }
             override fun onBuffering(buffering: Boolean) = dispatchEvent {
-                if (!buffering) seekWatchdog?.cancel()
+                if (!buffering) { seekWatchdog?.cancel(); seeking = false }
                 _state.update { it.copy(buffering = buffering) }
             }
             override fun onLoaded() = dispatchEvent {
+                fileReady = true
                 _state.update { it.copy(buffering = false, error = null) }
+                pendingSeek?.let { pendingSeek = null; seekNow(it) }
                 _state.value.current?.let { track -> onTrackStarted(track); prefetchNext() }
                 // Keep a radio queue topped up, as Android does when three songs are left.
                 _state.value.let { if (it.queue.size - it.index <= 3) fillRadio() }
@@ -168,8 +199,13 @@ class PlayerController(private val mpv: Mpv, private val resolver: StreamResolve
                     when {
                         // A dead sound device is not the song's fault: reopen the output, keep the same stream.
                         error != null && error.contains("audio output", ignoreCase = true) -> {
-                            mpv.reloadAudio(); delay(RECOVERY_DELAY_MS)
-                            if (generation == endedGeneration) load(lastPosition, fresh = false)
+                            if (++audioRetries > MAX_AUDIO_RETRIES) {
+                                // No sound device at all: say so instead of reopening it forever.
+                                _state.update { it.copy(buffering = false, playing = false, error = error) }
+                                return@launch
+                            }
+                            mpv.reloadAudio(); delay(RECOVERY_DELAY_MS * audioRetries * audioRetries)
+                            if (generation == endedGeneration) load(lastPosition, autoPlay = wantPlaying, fresh = false)
                         }
                         error != null -> onFailure(Failure.Source, error)
                         // A stream the server cut off reads as a normal end: resume it instead of moving on.
@@ -217,10 +253,10 @@ class PlayerController(private val mpv: Mpv, private val resolver: StreamResolve
 
     /** Plays a radio from [seed] (an artist's Shuffle or Radio button). */
     fun playRadio(seed: RadioSeed) = scope.launch {
-        val request = ++queueGeneration
+        val request = ++radioRequest
         val source = radioSource(seed)
         val first = withContext(Dispatchers.IO) { runCatching { source() }.getOrDefault(emptyList()) }
-        if (first.isEmpty() || request != queueGeneration) return@launch
+        if (first.isEmpty() || request != radioRequest) return@launch
         playNow(first)
         radio = source
     }
@@ -249,6 +285,7 @@ class PlayerController(private val mpv: Mpv, private val resolver: StreamResolve
     private fun playNow(tracks: List<Track>, startIndex: Int = 0, startSeconds: Double = 0.0, autoPlay: Boolean = true) {
         if (tracks.isEmpty() || closed) return
         queueGeneration++
+        radioRequest++
         radio = null
         radioJob?.cancel()
         var queue = tracks
@@ -328,6 +365,7 @@ class PlayerController(private val mpv: Mpv, private val resolver: StreamResolve
         loadJob?.cancel()
         radio = null
         radioJob?.cancel()
+        resolver.precache(emptyList())
         mpv.stop()
         currentStream = null
         unshuffled = null
@@ -342,15 +380,18 @@ class PlayerController(private val mpv: Mpv, private val resolver: StreamResolve
         val s = _state.value
         when {
             s.current == null -> Unit
-            loadJob?.isActive == true -> Unit // still resolving: a second press must not restart it
-            s.error != null || currentStream == null -> load(_position.value)
+            s.error != null -> load(_position.value)
+            // Still resolving or recovering: nothing to restart, it just starts paused (or not).
+            loadJob?.isActive == true || recovering -> setPaused(wantPlaying)
+            currentStream == null -> load(_position.value)
             else -> setPaused(!mpv.isPaused())
         }
     }
 
-    fun pause() = scope.launch { if (currentStream != null) setPaused(true) }
+    fun pause() = scope.launch { if (_state.value.current != null) setPaused(true) }
 
     private fun setPaused(paused: Boolean) {
+        wantPlaying = !paused
         mpv.setPaused(paused)
         _state.update { it.copy(playing = !paused) }
         if (!paused) prefetchNext()
@@ -361,6 +402,7 @@ class PlayerController(private val mpv: Mpv, private val resolver: StreamResolve
         when {
             s.hasNext -> { _state.update { it.copy(index = it.index + 1) }; load() }
             Settings.repeatMode == RepeatMode.All && s.queue.isNotEmpty() -> { _state.update { it.copy(index = 0) }; load() }
+            s.queue.isNotEmpty() -> continueAfterQueue() // same as reaching the end: radio, not a dead button
         }
     }
 
@@ -383,29 +425,37 @@ class PlayerController(private val mpv: Mpv, private val resolver: StreamResolve
         return listOfNotNull(codec, bitrate, rate).joinToString(" · ")
     }
 
-    /** Gets a song's stream ready before it is clicked (hovered rows), so it starts at once. */
-    fun prefetch(track: Track) = resolver.prefetch(track)
-
     private var seekWatchdog: Job? = null
 
-    /** Seeks on the serial owner; a seek that never restarts (refused range, dead URL) reloads at the target. */
+    /** Seeks on the serial owner; a seek that never restarts (dead connection) reloads at the target. */
     fun seek(seconds: Double) {
         _position.value = seconds
         scope.launch {
-            if (currentStream == null) return@launch
             lastPosition = seconds
-            mpv.seek(seconds)
-            val seekGeneration = generation
-            _state.update { it.copy(buffering = true) }
-            seekWatchdog?.cancel()
-            seekWatchdog = launch {
-                delay(SEEK_STALL_MS)
-                if (generation == seekGeneration && _state.value.buffering && !closed) onFailure(Failure.Network, "Seek stalled")
+            // Nothing is open yet: the load starts from the position just set.
+            if (currentStream == null) return@launch
+            if (!fileReady) { pendingSeek = seconds; return@launch }
+            seekNow(seconds)
+        }
+    }
+
+    private fun seekNow(seconds: Double) {
+        seeking = true
+        mpv.seek(seconds)
+        val seekGeneration = generation
+        _state.update { it.copy(buffering = true) }
+        seekWatchdog?.cancel()
+        seekWatchdog = scope.launch {
+            delay(SEEK_STALL_MS)
+            // Slow is not refused: the link stays valid, a dead one shows as an early end instead.
+            if (generation == seekGeneration && _state.value.buffering && !closed) {
+                seeking = false
+                onFailure(Failure.Network, "Seek stalled", rejectStream = false)
             }
         }
     }
-    fun setVolume(percent: Int) { Settings.volume = percent.coerceIn(0, 100); mpv.setVolume(Settings.volume) }
-    fun setMuted(muted: Boolean) { Settings.muted = muted; mpv.setMuted(muted) }
+    fun setVolume(percent: Int) { Settings.volume = percent.coerceIn(0, 100); scope.launch { mpv.setVolume(Settings.volume) } }
+    fun setMuted(muted: Boolean) { Settings.muted = muted; scope.launch { mpv.setMuted(muted) } }
 
     /** Sound outputs Windows offers now (refresh when Bluetooth or headphones connect). */
     fun audioDevices(): List<AudioDevice> = mpv.audioDevices()
@@ -500,6 +550,12 @@ class PlayerController(private val mpv: Mpv, private val resolver: StreamResolve
             listenedTrack = track
         }
         lastPosition = startSeconds
+        wantPlaying = autoPlay
+        recovering = false
+        fileReady = false
+        pendingSeek = null
+        seeking = false
+        seekWatchdog?.cancel()
         loadJob?.cancel()
         // The old song must go silent now, not after the new one resolves (yt-dlp can take seconds),
         // or its position ticks would show against the new song.
@@ -511,17 +567,26 @@ class PlayerController(private val mpv: Mpv, private val resolver: StreamResolve
         fallbacks.onMediaTransition(track.id)
         currentStream = null
         _position.value = startSeconds
-        _state.update { it.copy(buffering = true, error = null, durationSeconds = track.durationMs?.div(1000.0) ?: 0.0) }
+        _state.update { it.copy(buffering = true, playing = autoPlay, error = null, durationSeconds = track.durationMs?.div(1000.0) ?: 0.0) }
         changed()
+        // Skipping fast through a list: only the song it stops on gets a yt-dlp run.
+        val now = System.currentTimeMillis()
+        val skippingFast = now - lastLoadAt < FAST_SKIP_MS
+        lastLoadAt = now
         loadJob = scope.launch {
             try {
+                if (skippingFast) delay(FAST_SKIP_MS)
                 val stream = resolver.resolve(track)
                 if (generation != loadingGeneration || closed) return@launch
+                mpv.failure?.let { error(it) }
                 currentStream = stream
                 _state.update { it.copy(source = stream.source) }
                 if (stream.source != StreamSource.Saavn) loadSponsorSegments(track) else skipSegments = emptyList()
-                mpv.load(stream.url, startSeconds, stream.headers)
-                setPaused(!autoPlay)
+                // Paused first, or a song meant to wait could blip; a skip made while resolving moved the position.
+                mpv.setPaused(!wantPlaying)
+                lastPosition = _position.value
+                mpv.load(stream.url, _position.value, stream.headers)
+                if (wantPlaying) prefetchNext()
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -531,12 +596,25 @@ class PlayerController(private val mpv: Mpv, private val resolver: StreamResolve
         }
     }
 
-    private suspend fun onFailure(failure: Failure, message: String?) {
+    private suspend fun onFailure(failure: Failure, message: String?, rejectStream: Boolean = true) {
         val failedGeneration = generation
         val track = _state.value.current ?: return
         val stream = currentStream
-        val wasPlaying = _state.value.playing || _state.value.buffering
-        if (stream != null) resolver.reject(track, stream)
+        stableMs = 0
+        recovering = true
+        // No connection is nobody's fault: nothing is rejected or spent, and it carries on by itself once back.
+        val savedFile = stream != null && java.io.File(stream.url).isFile
+        if (!track.isLocal && !savedFile && !online()) {
+            AppLog.w(TAG, "No connection; waiting to resume ${track.id}")
+            _state.update { it.copy(buffering = true) }
+            while (!online()) {
+                delay(NETWORK_POLL_MS)
+                if (generation != failedGeneration || closed) return
+            }
+            if (generation == failedGeneration) load(_position.value, autoPlay = wantPlaying, fresh = false)
+            return
+        }
+        if (stream != null && rejectStream) resolver.reject(track, stream)
         val recovery = chooseRecovery(
             failure = failure,
             id = track.id,
@@ -546,12 +624,15 @@ class PlayerController(private val mpv: Mpv, private val resolver: StreamResolve
         )
         AppLog.w(TAG, "Playback failure for ${track.id} ($failure: $message) -> $recovery")
         when (recovery) {
-            Recovery.Retry -> { delay(RECOVERY_DELAY_MS * retries.attempts * retries.attempts); if (generation == failedGeneration) load(_position.value, autoPlay = wasPlaying, fresh = false) }
+            Recovery.Retry -> { delay(RECOVERY_DELAY_MS * retries.attempts * retries.attempts); if (generation == failedGeneration) load(_position.value, autoPlay = wantPlaying, fresh = false) }
             Recovery.Fallback -> {
                 delay(RECOVERY_DELAY_MS)
-                if (generation == failedGeneration) { StreamFallback.force(track.id); load(_position.value, autoPlay = wasPlaying, fresh = false) }
+                if (generation == failedGeneration) { StreamFallback.force(track.id); load(_position.value, autoPlay = wantPlaying, fresh = false) }
             }
-            Recovery.None -> _state.update { it.copy(buffering = false, playing = false, error = message ?: "Playback failed") }
+            Recovery.None -> {
+                recovering = false
+                _state.update { it.copy(buffering = false, playing = false, error = message ?: "Playback failed") }
+            }
         }
     }
 
@@ -561,31 +642,36 @@ class PlayerController(private val mpv: Mpv, private val resolver: StreamResolve
             Settings.repeatMode == RepeatMode.One -> load()
             s.hasNext -> { _state.update { it.copy(index = it.index + 1) }; load() }
             Settings.repeatMode == RepeatMode.All && s.queue.isNotEmpty() -> { _state.update { it.copy(index = 0) }; load() }
-            else -> {
-                val currentTrack = s.current
-                val finishingGeneration = generation
-                val finishingQueue = queueGeneration
-                val more = currentTrack?.let { runCatching { onQueueEnding(it) }.getOrNull() }.orEmpty()
-                    .filter { candidate -> _state.value.queue.none { it.id == candidate.id } }
-                // Only apply radio if the user hasn't switched songs or changed playlists during lookup
-                if (generation != finishingGeneration || queueGeneration != finishingQueue) return
-                if (more.isNotEmpty()) {
-                    _state.update { it.copy(queue = it.queue + more, index = it.index + 1) }
-                    load()
-                } else {
-                    // End of the queue: rewind to the first song and pause (Android behaviour).
-                    _state.update { it.copy(index = 0) }
-                    load(autoPlay = false)
-                }
-            }
+            else -> continueAfterQueue()
         }
     }
 
-    /** Resolves the next two songs ahead of time so changing song is instant. */
+    private suspend fun continueAfterQueue() {
+        val s = _state.value
+        val currentTrack = s.current
+        val finishingGeneration = generation
+        val finishingQueue = queueGeneration
+        suspend fun lookup() = currentTrack?.let { runCatching { onQueueEnding(it) }.getOrNull() }.orEmpty()
+            .filter { candidate -> _state.value.queue.none { it.id == candidate.id } }
+        // One failed lookup (a network blip) must not end the music.
+        val more = lookup().ifEmpty { delay(RADIO_RETRY_MS); lookup() }
+        // Only apply radio if the user hasn't switched songs or changed playlists during lookup
+        if (generation != finishingGeneration || queueGeneration != finishingQueue) return
+        if (more.isNotEmpty()) {
+            _state.update { it.copy(queue = it.queue + more, index = it.index + 1) }
+            load()
+        } else {
+            // End of the queue: rewind to the first song and pause (Android behaviour).
+            _state.update { it.copy(index = 0) }
+            load(autoPlay = false)
+        }
+    }
+
+    /** Saves this song and the next one to disk while this one plays, so what comes next is instant. */
     private fun prefetchNext() {
         val s = _state.value
         if (!s.playing) return
-        (1..1).mapNotNull { s.queue.getOrNull(s.index + it) }.forEach(resolver::prefetch)
+        resolver.precache(listOfNotNull(s.current, s.queue.getOrNull(s.index + 1)))
     }
 
     private fun changed() {
@@ -620,7 +706,12 @@ class PlayerController(private val mpv: Mpv, private val resolver: StreamResolve
     private companion object {
         const val TAG = "Player"
         const val RECOVERY_DELAY_MS = 300L
-        const val SEEK_STALL_MS = 8_000L
+        const val SEEK_STALL_MS = 15_000L
+        const val RETRIES_BACK_AFTER_MS = 30_000L
+        const val MAX_AUDIO_RETRIES = 3
+        const val NETWORK_POLL_MS = 3_000L
+        const val RADIO_RETRY_MS = 3_000L
+        const val FAST_SKIP_MS = 400L
         const val MAX_QUEUE = 500
         const val KEEP_PLAYED = 50
         /** An end this far before the song's length is a broken stream, not the song finishing. */

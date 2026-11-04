@@ -72,6 +72,19 @@ class PlaybackRecoveryTest {
         assertTrue(isRecoverablePlaybackFailure(PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_TIMEOUT, null))
         assertFalse(isRecoverablePlaybackFailure(PlaybackException.ERROR_CODE_DECODING_FAILED, null))
     }
+    @Test fun `a direct link is never asked past its limit or the song's end`() {
+        val chunk = 512 * 1024L
+        assertEquals(chunk, directRangeLength(0, 4_000_000, chunk))
+        assertEquals(100L, directRangeLength(DIRECT_STREAM_LIMIT - 100, 4_000_000, chunk))
+        assertEquals(50L, directRangeLength(0, 50, chunk))
+    }
+    @Test fun `playing on earns the retries back`() {
+        val budget = PlaybackRetryBudget(limit = 1)
+        assertTrue(budget.tryAcquire("one"))
+        assertFalse(budget.tryAcquire("one"))
+        budget.reset()
+        assertTrue(budget.tryAcquire("one"))
+    }
     @Test fun `an audio output fault retries but never pins the song to the fallback`() {
         assertEquals(
             listOf(Recovery.Retry, Recovery.Retry, Recovery.None),

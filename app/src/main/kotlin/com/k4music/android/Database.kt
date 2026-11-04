@@ -300,6 +300,9 @@ interface DatabaseAccessor {
     @RewriteQueriesToDropUnusedColumns
     fun history(size: Int = 100): Flow<List<Song>>
 
+    @Query("UPDATE QueuedMediaItem SET position = :position WHERE position IS NOT NULL")
+    fun updateQueuePosition(position: Long)
+
     @Query("DELETE FROM QueuedMediaItem")
     fun clearQueue()
 

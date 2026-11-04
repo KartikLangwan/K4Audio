@@ -89,7 +89,7 @@ internal class MpvProperty(p: Pointer) : Structure(p) {
  * One libmpv audio player. Events arrive on a background thread through [Listener];
  * every call is safe from any thread (libmpv's client API is thread-safe).
  */
-class Mpv(libraryDir: java.io.File) : AutoCloseable {
+class Mpv(private val libraryDir: java.io.File) : AutoCloseable {
     interface Listener {
         fun onPosition(seconds: Double) {}
         fun onDuration(seconds: Double) {}
@@ -102,19 +102,39 @@ class Mpv(libraryDir: java.io.File) : AutoCloseable {
         fun onAudioOutputFailed() {}
     }
 
-    private val lib: LibMpv
-    private val ctx: Pointer
+    private lateinit var lib: LibMpv
+    private lateinit var ctx: Pointer
     @Volatile private var listener: Listener? = null
     @Volatile private var closed = false
-    private val events: Thread
+    private var events: Thread? = null
+    /** Why the player could not start, if it could not; nothing will play then. */
+    @Volatile var failure: String? = null
+        private set
     private val access = ReentrantReadWriteLock()
     private val shutdown = Any()
 
-    private inline fun <T> withHandle(fallback: T, operation: () -> T): T = access.read {
-        if (closed) fallback else operation()
+    /**
+     * The library is big and the first load after a reboot can take seconds (Windows scans it), so it
+     * loads beside the window opening; the first call that needs it waits here.
+     */
+    private val starting = thread(isDaemon = true, name = "mpv-start") {
+        val started = System.currentTimeMillis()
+        try {
+            start()
+            com.k4music.desktop.AppLog.i("mpv", "Ready in ${System.currentTimeMillis() - started}ms")
+        } catch (error: Throwable) {
+            failure = error.message ?: error.toString()
+            closed = true
+            com.k4music.desktop.AppLog.e("mpv", "Could not start the player", error)
+        }
     }
 
-    init {
+    private inline fun <T> withHandle(fallback: T, operation: () -> T): T {
+        starting.join()
+        return access.read { if (closed) fallback else operation() }
+    }
+
+    private fun start() {
         System.setProperty("jna.library.path", libraryDir.absolutePath)
         // UTF-8, not the ANSI code page: local file paths and titles can be any language.
         lib = Native.load("libmpv-2", LibMpv::class.java, mapOf(Library.OPTION_STRING_ENCODING to "UTF-8"))
@@ -123,7 +143,8 @@ class Mpv(libraryDir: java.io.File) : AutoCloseable {
             "vid" to "no", "video" to "no", "audio-display" to "no",
             "ytdl" to "no", "terminal" to "no", "input-default-bindings" to "no",
             "idle" to "yes", "keep-open" to "no",
-            "cache" to "yes", "demuxer-max-bytes" to "64MiB", "demuxer-readahead-secs" to "30",
+            // Reads the whole song ahead (a skip to anywhere plays at once) and keeps what was played.
+            "cache" to "yes", "demuxer-max-bytes" to "32MiB", "demuxer-max-back-bytes" to "32MiB", "cache-pause-wait" to "0.5",
             "network-timeout" to "15", "audio-client-name" to "K4 Audio",
             "volume-max" to "100", "gapless-audio" to "weak",
             // YouTube throttles one long download; ranged requests (as ExoPlayer makes) arrive at full speed.
@@ -160,6 +181,8 @@ class Mpv(libraryDir: java.io.File) : AutoCloseable {
 
     fun stop() = command("stop")
     fun seek(seconds: Double) = command("seek", "%.3f".format(java.util.Locale.ROOT, seconds), "absolute")
+
+    /** Stops the event thread before freeing the handle it waits on. */
 
     fun setPaused(paused: Boolean) = set("pause", if (paused) "yes" else "no")
     fun setVolume(percent: Int) = set("volume", percent.coerceIn(0, 100).toString())
@@ -240,12 +263,13 @@ class Mpv(libraryDir: java.io.File) : AutoCloseable {
         }
     }
 
-    /** Stops the event thread before freeing the handle it waits on. */
     private companion object {
         const val DEFAULT_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
     }
 
     override fun close() {
+        starting.join()
+        val events = events ?: return // never started
         synchronized(shutdown) {
             access.write {
                 if (closed) return

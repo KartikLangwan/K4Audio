@@ -50,7 +50,7 @@ object PlayerPreferences : GlobalPreferencesHolder() {
     var persistentQueue by boolean(true)
     var smartFallback by boolean(true)
     var stopWhenClosed by boolean(false)
-    var stopOnMinimumVolume by boolean(true)
+    var stopOnMinimumVolume by boolean(false)
 
     var isShowingLyrics by boolean(false)
     var isShowingSynchronizedLyrics by boolean(false)

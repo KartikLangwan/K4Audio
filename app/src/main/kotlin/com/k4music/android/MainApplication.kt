@@ -728,6 +728,8 @@ object Dependencies {
             .also { if (!it.canExecute()) it.setExecutable(true) }
     }
 
+    fun warmUp() { module }
+
     fun runDownload(id: String, format: String = "bestaudio/best"): String = module
         .callAttr("download", quickjsPath.absolutePath, id, format)
         .toString()

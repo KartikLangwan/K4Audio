@@ -17,12 +17,10 @@ data class YouTubeRadio(
     private var nextContinuation: String? = null
 
     suspend fun process(): List<MediaItem> {
-        var mediaItems: List<MediaItem>? = null
-
-        nextContinuation = withContext(Dispatchers.IO) {
+        return withContext(Dispatchers.IO) {
             val continuation = nextContinuation
 
-            if (continuation == null) {
+            val page = if (continuation == null) {
                 Innertube.nextPage(
                     NextBody(
                         videoId = videoId,
@@ -39,12 +37,10 @@ data class YouTubeRadio(
                 }
             } else {
                 Innertube.nextPage(ContinuationBody(continuation = continuation))
-            }?.getOrNull()?.let { songsPage ->
-                mediaItems = songsPage.items?.map(Innertube.SongItem::asMediaItem)
-                songsPage.continuation?.takeUnless { nextContinuation == it }
-            }
-        }
+            }?.getOrNull() ?: return@withContext emptyList() // a failed fetch keeps our place for the next try
 
-        return mediaItems ?: emptyList()
+            nextContinuation = page.continuation?.takeUnless { it == continuation }
+            page.items?.map(Innertube.SongItem::asMediaItem).orEmpty()
+        }
     }
 }

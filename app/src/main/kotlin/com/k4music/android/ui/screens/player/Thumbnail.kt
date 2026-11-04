@@ -305,7 +305,7 @@ fun Thumbnail(
                     }
 
                 },
-                onDismiss = { binder?.player?.prepare() },
+                onDismiss = { binder?.retryPlayback() },
                 modifier = Modifier.height(height.px.dp)
             )
         }

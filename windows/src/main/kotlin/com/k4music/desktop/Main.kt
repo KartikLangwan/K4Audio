@@ -1,5 +1,6 @@
 package com.k4music.desktop
 
+import com.k4music.providers.innertube.requests.warmUpWholeSong
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.mutableStateOf
@@ -87,7 +88,7 @@ fun main(args: Array<String>) {
             }
         }
     }
-    val devCheck = args.any { it in setOf("--selftest", "--screenshots", "--uitest", "--dltest") }
+    val devCheck = args.any { it in setOf("--selftest", "--screenshots", "--uitest", "--dltest", "--resumetest") }
     if (!devCheck && !SingleInstance.acquire(args, incoming)) exitProcess(0)
     // Nothing was running to close: do not start the app either.
     if (QUIT_ARG in args) exitProcess(0)
@@ -112,7 +113,12 @@ fun main(args: Array<String>) {
         }
     }
     devMode(args, player)
-    QueueStore.attach(player)
+    val startMinimized = "--minimized" in args || ("--startup" in args && Settings.startMinimizedOnStartup)
+    QueueStore.attach(player, windowShown = !startMinimized)
+    // Ready before the first song needs it.
+    if (!startMinimized) Thread({
+        kotlinx.coroutines.runBlocking { com.k4music.providers.innertube.Innertube.run { warmUpWholeSong() } }
+    }, "k4-warmup").apply { isDaemon = true }.start()
     // A few seconds after start, then every hour while running (at most every 6 hours against GitHub): offer a new version (each version is offered once).
     // A failed check (offline, GitHub down) is not counted as done, so it is tried again soon.
     if (!devCheck) kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch {
@@ -151,7 +157,6 @@ fun main(args: Array<String>) {
             size = DpSize(Settings.windowWidth.dp, Settings.windowHeight.dp),
             placement = if (Settings.windowMaximized) WindowPlacement.Maximized else WindowPlacement.Floating
         )
-        val startMinimized = "--minimized" in args || ("--startup" in args && Settings.startMinimizedOnStartup)
         val visible = remember { mutableStateOf(!startMinimized) }
         val panel = remember { mutableStateOf<SidePanel?>(null) }
         val playerOpen = remember { mutableStateOf(false) }
@@ -363,7 +368,8 @@ private fun devMode(args: Array<String>, player: PlayerController) {
     val shots = arg("--screenshots")
     val uitest = arg("--uitest")
     val dltest = arg("--dltest")
-    if (selftest == null && shots == null && uitest == null && dltest == null) return
+    val resumetest = arg("--resumetest")
+    if (selftest == null && shots == null && uitest == null && dltest == null && resumetest == null) return
     val sample = kotlinx.coroutines.runBlocking {
         val youtube = com.k4music.providers.innertube.Innertube.searchPage(
             com.k4music.providers.innertube.models.bodies.SearchBody(
@@ -407,6 +413,7 @@ private fun devMode(args: Array<String>, player: PlayerController) {
         java.io.File(dltest, "dltest.txt").writeText(report.toString())
     }
     var ok = true
+    if (resumetest != null) ok = DevTools.resumeTest(resumetest, player, sample)
     if (selftest != null) ok = DevTools.selftest(selftest, player, sample)
     if (shots != null) {
         player.restore(sample, 0, 42.0)

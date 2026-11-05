@@ -130,7 +130,8 @@ fun Player.forceSeekToNext() {
     )
     if (next != null) return seekTo(next, C.TIME_UNSET)
 
-    // Nothing ahead: rewind to the start of the queue and stop there.
+    // Nothing ahead: end the queue, so the service does what it does at any other end (similar songs).
+    if (duration != C.TIME_UNSET) return seekTo(duration)
     pause()
     val first = timeline.getFirstWindowIndex(shuffleModeEnabled)
     if (first != C.INDEX_UNSET && first != currentMediaItemIndex) seekTo(first, 0)

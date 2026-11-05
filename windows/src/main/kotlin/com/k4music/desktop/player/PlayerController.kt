@@ -42,7 +42,9 @@ data class PlayerState(
     val buffering: Boolean = false,
     val durationSeconds: Double = 0.0,
     val error: String? = null,
-    val source: StreamSource? = null
+    val source: StreamSource? = null,
+    /** Holding until the connection is back; playback then carries on by itself. */
+    val waitingForNetwork: Boolean = false
 ) {
     val current get() = queue.getOrNull(index)
     val hasNext get() = index + 1 < queue.size
@@ -81,7 +83,7 @@ class PlayerController(private val mpv: Mpv, private val resolver: StreamResolve
     private var lastSavedPosition = 0.0
 
     /** Called when the queue changes (for persistence) and when a song starts (for history). */
-    var onQueueChanged: (List<Track>, Int, Double) -> Unit = { _, _, _ -> }
+    var onQueueChanged: (List<Track>, Int, Double, Boolean) -> Unit = { _, _, _, _ -> }
     var onTrackStarted: (Track) -> Unit = {}
     /** A song stopped being current after [Long] ms of real listening (history, play time). */
     var onPlayed: (Track, Long) -> Unit = { _, _ -> }
@@ -154,9 +156,9 @@ class PlayerController(private val mpv: Mpv, private val resolver: StreamResolve
                 lastPosition = seconds
                 _position.value = seconds
                 // Keep the saved resume point fresh, so a crash or power cut resumes near here.
-                if (kotlin.math.abs(seconds - lastSavedPosition) >= 10) {
+                if (kotlin.math.abs(seconds - lastSavedPosition) >= 5) {
                     lastSavedPosition = seconds
-                    _state.value.let { onQueueChanged(it.queue, it.index, seconds) }
+                    _state.value.let { onQueueChanged(it.queue, it.index, seconds, wantPlaying) }
                 }
             }
             override fun onDuration(seconds: Double) = dispatchEvent { _state.update { it.copy(durationSeconds = seconds) } }
@@ -300,13 +302,16 @@ class PlayerController(private val mpv: Mpv, private val resolver: StreamResolve
         load(startSeconds, autoPlay)
     }
 
-    /** Puts back a saved queue without touching the network; the first play loads it. */
-    fun restore(tracks: List<Track>, index: Int, positionSeconds: Double, autoPlay: Boolean = false) = scope.launch {
+    /**
+     * Puts back a saved queue at the same moment. [autoPlay] carries on playing; [preload] gets the song
+     * ready but paused, so Play is instant; with neither, nothing touches the network until the first play.
+     */
+    fun restore(tracks: List<Track>, index: Int, positionSeconds: Double, autoPlay: Boolean = false, preload: Boolean = false) = scope.launch {
         if (tracks.isEmpty()) return@launch
         val i = index.coerceIn(0, tracks.lastIndex)
         _state.update { it.copy(queue = tracks, index = i, durationSeconds = tracks[i].durationMs?.div(1000.0) ?: 0.0) }
         _position.value = positionSeconds
-        if (autoPlay) load(positionSeconds)
+        if (autoPlay || preload) load(positionSeconds, autoPlay = autoPlay)
     }
 
     fun playAt(index: Int) = scope.launch {
@@ -394,6 +399,7 @@ class PlayerController(private val mpv: Mpv, private val resolver: StreamResolve
         wantPlaying = !paused
         mpv.setPaused(paused)
         _state.update { it.copy(playing = !paused) }
+        _state.value.let { onQueueChanged(it.queue, it.index, _position.value, !paused) }
         if (!paused) prefetchNext()
     }
 
@@ -567,7 +573,7 @@ class PlayerController(private val mpv: Mpv, private val resolver: StreamResolve
         fallbacks.onMediaTransition(track.id)
         currentStream = null
         _position.value = startSeconds
-        _state.update { it.copy(buffering = true, playing = autoPlay, error = null, durationSeconds = track.durationMs?.div(1000.0) ?: 0.0) }
+        _state.update { it.copy(buffering = true, playing = autoPlay, error = null, waitingForNetwork = false, durationSeconds = track.durationMs?.div(1000.0) ?: 0.0) }
         changed()
         // Skipping fast through a list: only the song it stops on gets a yt-dlp run.
         val now = System.currentTimeMillis()
@@ -601,12 +607,19 @@ class PlayerController(private val mpv: Mpv, private val resolver: StreamResolve
         val track = _state.value.current ?: return
         val stream = currentStream
         stableMs = 0
+        // Paused or only getting ready: nobody is waiting for sound, so the next Play simply loads it again.
+        if (!wantPlaying) {
+            if (stream != null && rejectStream) resolver.reject(track, stream)
+            currentStream = null
+            _state.update { it.copy(buffering = false) }
+            return
+        }
         recovering = true
         // No connection is nobody's fault: nothing is rejected or spent, and it carries on by itself once back.
         val savedFile = stream != null && java.io.File(stream.url).isFile
         if (!track.isLocal && !savedFile && !online()) {
             AppLog.w(TAG, "No connection; waiting to resume ${track.id}")
-            _state.update { it.copy(buffering = true) }
+            _state.update { it.copy(buffering = true, waitingForNetwork = true) }
             while (!online()) {
                 delay(NETWORK_POLL_MS)
                 if (generation != failedGeneration || closed) return
@@ -627,7 +640,8 @@ class PlayerController(private val mpv: Mpv, private val resolver: StreamResolve
             Recovery.Retry -> { delay(RECOVERY_DELAY_MS * retries.attempts * retries.attempts); if (generation == failedGeneration) load(_position.value, autoPlay = wantPlaying, fresh = false) }
             Recovery.Fallback -> {
                 delay(RECOVERY_DELAY_MS)
-                if (generation == failedGeneration) { StreamFallback.force(track.id); load(_position.value, autoPlay = wantPlaying, fresh = false) }
+                // A dropped connection says nothing about the song: only a refusal may keep it on JioSaavn.
+                if (generation == failedGeneration) { StreamFallback.force(track.id, pin = failure == Failure.Source); load(_position.value, autoPlay = wantPlaying, fresh = false) }
             }
             Recovery.None -> {
                 recovering = false
@@ -680,7 +694,8 @@ class PlayerController(private val mpv: Mpv, private val resolver: StreamResolve
     private fun changed() {
         queueGeneration++
         val s = _state.value
-        onQueueChanged(s.queue, s.index, _position.value)
+        onQueueChanged(s.queue, s.index, _position.value, wantPlaying)
+        if (!closed) prefetchNext() // the song after this one may just have changed
     }
 
     private suspend fun online(): Boolean = withContext(Dispatchers.IO) {

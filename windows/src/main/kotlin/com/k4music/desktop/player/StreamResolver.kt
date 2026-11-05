@@ -30,6 +30,9 @@ enum class StreamSource { Local, YtDlp, Saavn }
 /** [temporary]: a stand-in while YouTube was slow; not kept, so the next play tries YouTube again. */
 data class Stream(val url: String, val source: StreamSource, val headers: Map<String, String> = emptyMap(), val temporary: Boolean = false)
 
+/** YouTube did not answer at all: the connection's fault, so nothing is decided about the song. */
+class NoAnswerException : java.io.IOException("No connection to YouTube")
+
 /** Nothing could serve this song (not a connection problem). */
 class UnplayableException(message: String) : Exception(message)
 
@@ -115,6 +118,8 @@ class StreamResolver {
                     if (!File(stream.url).isFile) StreamCache.store(track.id, stream)
                 } catch (error: kotlinx.coroutines.CancellationException) {
                     throw error
+                } catch (error: StreamRefusedException) {
+                    forget(track.id)
                 } catch (error: Exception) {
                     AppLog.i(TAG, "Could not cache ${track.id} ahead: ${error.message}")
                 }
@@ -151,7 +156,12 @@ class StreamResolver {
                 ?: throw UnplayableException("JioSaavn stream unavailable")
             pinned != null -> Stream(pinned, StreamSource.Saavn)
             else -> {
-                val youtube = wholeSongLink(track) ?: when {
+                val direct = try { wholeSongLink(track) } catch (noAnswer: NoAnswerException) {
+                    // No yt-dlp (it would fail the same way) and nothing pinned. A song starting now may
+                    // use JioSaavn for the moment; keeping a file waits for YouTube.
+                    return@withContext (if (fallbackOn && !patient) saavnFallback(track, remember = false)?.copy(temporary = true) else null) ?: throw noAnswer
+                }
+                val youtube = direct ?: when {
                     youtubeBlocked() -> null // don't keep knocking while YouTube is blocking this network
                     fallbackOn && !patient -> youtubeOrQuickFallback(track)
                     else -> ytDlp(track.id)
@@ -171,8 +181,9 @@ class StreamResolver {
     /** YouTube's own whole-song link, when it gives one; everything else about the song goes on as before. */
     private suspend fun wholeSongLink(track: Track): Stream? {
         if (track.id in directRefused) return null
-        val answer = kotlinx.coroutines.withTimeoutOrNull(DIRECT_TIMEOUT_MS) { Innertube.wholeSongPlayer(PlayerBody(videoId = track.id)) }?.getOrNull()
-        val url = answer?.streamingData?.audioFormat(Settings.audioQuality.youtubeItags)?.url?.takeIf { it.isNotBlank() } ?: return null
+        val answer = kotlinx.coroutines.withTimeoutOrNull(DIRECT_TIMEOUT_MS) { Innertube.wholeSongPlayer(PlayerBody(videoId = track.id)) }
+        if (answer == null || answer.exceptionOrNull() is java.io.IOException) throw NoAnswerException()
+        val url = answer.getOrNull()?.streamingData?.audioFormat(Settings.audioQuality.youtubeItags)?.url?.takeIf { it.isNotBlank() } ?: return null
         return Stream(url, StreamSource.YtDlp)
     }
 
@@ -356,7 +367,7 @@ class StreamResolver {
         const val TAG = "StreamResolver"
         const val TTL_MS = 3 * 60 * 60 * 1000L
         const val PRECACHE_DELAY_MS = 3_000L
-        const val DIRECT_TIMEOUT_MS = 6_000L
+        const val DIRECT_TIMEOUT_MS = 8_000L
         const val SLOW_YOUTUBE_MS = 7_000L
         const val YT_DLP_TIMEOUT_S = 30L // a cold start (unpack + JS challenge) can pass 15 s and was killed
         const val BLOCK_PAUSE_MS = 10 * 60 * 1000L

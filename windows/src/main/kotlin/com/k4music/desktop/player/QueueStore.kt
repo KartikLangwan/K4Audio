@@ -18,7 +18,7 @@ import java.util.concurrent.TimeUnit
  */
 object QueueStore {
     @Serializable
-    data class Saved(val queue: List<Track>, val index: Int, val position: Double)
+    data class Saved(val queue: List<Track>, val index: Int, val position: Double, val playing: Boolean = false)
 
     private val file get() = AppPaths.data.resolve("queue.json")
     /** Playback position only ("index seconds"): rewritten every few seconds, while the big queue file is not. */
@@ -29,9 +29,10 @@ object QueueStore {
     @Volatile private var pending: ScheduledFuture<*>? = null
     @Volatile private var lastSaved: Saved? = null
 
-    fun attach(player: PlayerController) {
-        player.onQueueChanged = { queue, index, position ->
-            val s = Saved(queue, index, position)
+    /** [windowShown]: someone just opened the app. A start hidden in the tray stays quiet and uses no network. */
+    fun attach(player: PlayerController, windowShown: Boolean = true) {
+        player.onQueueChanged = { queue, index, position, playing ->
+            val s = Saved(queue, index, position, playing)
             save(s)
         }
         if (!Settings.persistentQueue) return
@@ -39,9 +40,14 @@ object QueueStore {
             ?.takeIf { it.queue.isNotEmpty() }
             ?.let { saved ->
                 val newer = runCatching { positionFile.readText().trim().split(' ') }.getOrNull()
-                    ?.takeIf { it.size == 2 && it[0].toIntOrNull() == saved.index }?.get(1)?.toDoubleOrNull()
+                    ?.takeIf { it.size >= 2 && it[0].toIntOrNull() == saved.index }
+                val playing = newer?.getOrNull(2)?.toBooleanStrictOrNull() ?: saved.playing
                 onDisk = saved
-                player.restore(saved.queue, saved.index, newer ?: saved.position, autoPlay = Settings.resumeOnStart)
+                player.restore(
+                    saved.queue, saved.index, newer?.get(1)?.toDoubleOrNull() ?: saved.position,
+                    autoPlay = windowShown && playing && Settings.resumeOnStart,
+                    preload = windowShown
+                )
             }
     }
 
@@ -71,10 +77,10 @@ object QueueStore {
             }
             val unchanged = onDisk?.let { it.queue == saved.queue && it.index == saved.index } == true
             if (unchanged) {
-                replace(positionFile, "${saved.index} ${saved.position}".toByteArray(Charsets.UTF_8))
+                replace(positionFile, "${saved.index} ${saved.position} ${saved.playing}".toByteArray(Charsets.UTF_8))
             } else {
                 replace(file, json.encodeToString(Saved.serializer(), saved).toByteArray(Charsets.UTF_8))
-                replace(positionFile, "${saved.index} ${saved.position}".toByteArray(Charsets.UTF_8))
+                replace(positionFile, "${saved.index} ${saved.position} ${saved.playing}".toByteArray(Charsets.UTF_8))
                 onDisk = saved
             }
         }.onFailure { AppLog.w("Queue", "Could not save the queue safely", it) }

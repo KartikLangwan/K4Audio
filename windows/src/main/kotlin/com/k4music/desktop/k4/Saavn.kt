@@ -61,6 +61,7 @@ object StreamFallback {
         Properties().also { p -> runCatching { file.inputStream().use(p::load) } }
     }
     private val forced = ConcurrentHashMap.newKeySet<String>()
+    private val standIns = ConcurrentHashMap.newKeySet<String>()
 
     /** YouTube first, always: a pin older than a day is dropped so the song tries YouTube again. */
     @Synchronized fun url(id: String): String? {
@@ -71,9 +72,13 @@ object StreamFallback {
     }
     @Synchronized fun drop(id: String) { if (props.remove(id) != null) { props.remove("t.$id"); save() } }
 
-    /** Next resolve of [id] skips YouTube and looks the song up on JioSaavn afresh. */
-    fun force(id: String) {
+    /**
+     * Next resolve of [id] skips YouTube and looks the song up on JioSaavn afresh. [pin] false: only for
+     * now, because the connection failed. That says nothing about the song, so it must not stick to it.
+     */
+    fun force(id: String, pin: Boolean = true) {
         drop(id)
+        if (pin) standIns.remove(id) else standIns.add(id)
         forced.add(id)
     }
     fun isForced(id: String) = id in forced
@@ -81,7 +86,7 @@ object StreamFallback {
     @Synchronized
     fun resolved(id: String, url: String?) {
         forced.remove(id)
-        if (url == null) return
+        if (standIns.remove(id) || url == null) return
         // ponytail: wholesale reset at LIMIT entries; a dropped song just re-resolves via YouTube.
         if (props.size >= LIMIT * 2) props.clear()
         props.setProperty(id, url)

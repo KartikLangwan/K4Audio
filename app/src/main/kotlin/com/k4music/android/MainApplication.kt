@@ -181,7 +181,10 @@ class MainActivity : ComponentActivity(), MonetColorsChangedListener {
 
     private val serviceConnection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName?, service: IBinder?) {
-            if (service is PlayerService.Binder) vm.binder = service
+            if (service is PlayerService.Binder) {
+                vm.binder = service
+                service.onAppOpened()
+            }
         }
 
         override fun onServiceDisconnected(name: ComponentName?) {

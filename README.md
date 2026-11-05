@@ -28,7 +28,7 @@ Downloads are in this repository's [**Releases**](https://github.com/KartikLangw
 | **File** | [K4Audio-v2.14.26-RELEASE.apk](https://github.com/KartikLangwan/K4Audio/releases/download/v2.14.26/K4Audio-v2.14.26-RELEASE.apk) | [K4Audio-Setup-2.14.26.exe](https://github.com/KartikLangwan/K4Audio/releases/download/v2.14.26/K4Audio-Setup-2.14.26.exe) |
 | **Requires** | Android 7.0+, 64-bit ARM (arm64-v8a) | Windows 10 / 11, 64-bit |
 | **Size** | 26.4 MB | 115.8 MB |
-| **SHA-256** | `21C01952FE8D3A311DDACCC113955A035E7443C2E9610890AA5B419CEAF069A3` | `6523D070620AA4F41600C3524DF19869FC111238CC8B38F994B991852A05041A` |
+| **SHA-256** | `DE6D51983929316BC22103BC0363674E4E5FE461A15E22506AF7AEEC2AC93056` | `4A79F6498D0D00F773689BB93AF2BEA5DD1DE41FE9B7E43F28C54DBC8D3EA5CC` |
 
 2.14.26 installs over 2.12.14 and earlier 2.14.26 builds, and keeps your library, likes, downloads and history. If you already have 2.14.26, the app won't offer this build as an update because the number is the same: download it and install it over your current app. Libraries backed up from 2.14.26 need 2.14.26 or newer to restore.
 
@@ -38,6 +38,10 @@ Downloads are in this repository's [**Releases**](https://github.com/KartikLangw
 
 ## What's new in 2.14.26
 
+- **Picks up where you left off:** close the app while a song is playing and open it again: the same song carries on from the same moment. A paused song comes back paused and ready, so Play is instant. (Settings → Player on Android, Settings on PC.)
+- **Waits for the connection:** when the internet drops, the player says *Waiting for connection* and carries on by itself once you're back online. Songs are no longer switched to JioSaavn just because the connection dropped.
+- **Lighter on mobile data:** the phone reads two minutes ahead and saves only the start of the next song on mobile data. Next on the last song carries on with similar songs.
+- **Fixed:** the app could come back on the wrong song after being closed, and changing the streaming quality could switch a song to JioSaavn.
 - **Songs start much faster:** about 1 second on PC and under 2 seconds on Android in testing. Most songs no longer wait for the YouTube helper.
 - **Skipping to any part of a song works:** playback picks up again in under a second, even right after a song starts. Songs no longer stop at about 0:30.
 - **Downloads finish in seconds,** including a song you have played or are playing right now.

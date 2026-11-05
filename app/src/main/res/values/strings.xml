@@ -272,6 +272,9 @@
     <string name="settings_fallback_off">Smart fallback off</string>
     <string name="persistent_queue">Persistent queue</string>
     <string name="persistent_queue_description">Save and restore playing songs</string>
+    <string name="resume_on_open">Continue when opened</string>
+    <string name="resume_on_open_description">If music was playing when the app closed, it carries on from the same moment</string>
+    <string name="waiting_for_connection">Waiting for connection…</string>
     <string name="resume_playback">Resume playback</string>
     <string name="resume_playback_description">When a wired or Bluetooth device is connected</string>
     <string name="stop_when_closed">Stop when closed</string>

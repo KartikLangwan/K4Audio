@@ -58,3 +58,21 @@ internal fun chooseRecovery(
     (isRecoverablePlaybackFailure(code, httpStatus) || isDeviceFailure(code)) && retries.tryAcquire(id) -> Recovery.Retry
     else -> Recovery.None
 }
+
+/**
+ * On mobile data the player stops reading two minutes ahead and starts again under one, so it loads
+ * in a few large bursts (the radio can sleep in between) and a skipped song costs little.
+ */
+internal class MobileDataRest {
+    private var resting = false
+
+    fun resting(metered: Boolean, bufferedUs: Long): Boolean {
+        resting = when {
+            !metered -> false
+            bufferedUs >= 120_000_000L -> true
+            bufferedUs < 60_000_000L -> false
+            else -> resting
+        }
+        return resting
+    }
+}

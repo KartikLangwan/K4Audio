@@ -167,7 +167,7 @@ object Settings : SettingsStore({ AppPaths.settings }) {
     var volumeNormalization by boolean(true)
     var sponsorBlockEnabled by boolean(false)
     var sponsorBlockCategories by string("sponsor,selfpromo,intro,outro,music_offtopic")
-    var resumeOnStart by boolean(false)
+    var resumeOnStart by boolean(true)
     var launchAtStartup by boolean(false)
     /** When yt-dlp was last brought up to date (ms); it is refreshed weekly. */
     var ytDlpCheckedAt by long(0L)

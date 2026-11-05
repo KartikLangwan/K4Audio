@@ -6,6 +6,12 @@ import androidx.annotation.OptIn
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.util.UnstableApi
 
+/** YouTube did not answer at all: the connection's fault, so nothing is decided about the song. */
+class NoConnectionException : java.io.IOException("No connection to YouTube")
+
+/** The player is holding until YouTube can be reached again; the UI says so. */
+val waitingForConnection = kotlinx.coroutines.flow.MutableStateFlow(false)
+
 class PlayableFormatNotFoundException(cause: Throwable? = null) : PlaybackException(
     /* message = */ "Playable format not found",
     /* cause = */ cause,

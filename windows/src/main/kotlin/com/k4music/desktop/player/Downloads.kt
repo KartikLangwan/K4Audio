@@ -213,6 +213,10 @@ object Downloads {
                 check(part.length() > 0) { "Empty audio response" }
                 check(total == null || part.length() == total) { "Download was cut off (expected $total bytes, got ${part.length()})" }
                 publish(track, part, extension)
+            } catch (e: StreamRefusedException) {
+                part.delete()
+                resolver.reject(track, stream) // the retry gets a new link instead of this one again
+                throw e
             } catch (e: Throwable) {
                 part.delete()
                 throw e

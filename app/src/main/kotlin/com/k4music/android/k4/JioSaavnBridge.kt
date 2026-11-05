@@ -53,6 +53,7 @@ object StreamFallback {
         Dependencies.application.getSharedPreferences("stream_fallback", Context.MODE_PRIVATE)
     }
     private val forced = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+    private val standIns = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
 
     fun url(id: String): String? = prefs.getString(id, null)
 
@@ -62,9 +63,13 @@ object StreamFallback {
      */
     fun isStale(id: String) = System.currentTimeMillis() - prefs.getLong("t:$id", 0L) > PIN_TTL_MS
 
-    /** Next resolve of [id] skips YouTube and looks the song up on JioSaavn afresh. */
-    fun force(id: String) {
+    /**
+     * Next resolve of [id] skips YouTube and looks the song up on JioSaavn afresh. [pin] false: only for
+     * now, because the connection failed. That says nothing about the song, so it must not stick to it.
+     */
+    fun force(id: String, pin: Boolean = true) {
         drop(id)
+        if (pin) standIns.remove(id) else standIns.add(id)
         forced.add(id)
     }
     fun isForced(id: String) = id in forced
@@ -74,7 +79,7 @@ object StreamFallback {
     /** [pinMs]: how long the pin should hold, when shorter than the usual day. */
     fun resolved(id: String, url: String?, pinMs: Long? = null) {
         forced.remove(id)
-        if (url == null) return
+        if (standIns.remove(id) || url == null) return
         // ponytail: wholesale reset at 1000 pins (2 keys each); a dropped song just re-resolves via YouTube.
         if (prefs.all.size >= 2000) prefs.edit().clear().apply()
         prefs.edit().putString(id, url).putLong("t:$id", System.currentTimeMillis() - (pinMs?.let { PIN_TTL_MS - it } ?: 0L)).apply()

@@ -54,6 +54,7 @@ import com.k4music.desktop.prefs.Settings
 import com.k4music.desktop.res.Res
 import com.k4music.desktop.res.desktop_mute
 import com.k4music.desktop.res.desktop_playing_from_saavn
+import com.k4music.desktop.res.waiting_for_connection
 import com.k4music.desktop.res.desktop_unmute
 import com.k4music.desktop.res.heart
 import com.k4music.desktop.res.heart_outline
@@ -140,11 +141,12 @@ fun NowPlayingBar(
                         modifier = Modifier.clickable(enabled = track?.albumId != null) { track?.albumId?.let { navigator.go(Screen.Album(it)) } }
                     )
                     Text(
-                        if (state.source == StreamSource.Saavn && track?.isSaavn == false)
+                        if (state.waitingForNetwork) stringResource(Res.string.waiting_for_connection)
+                        else if (state.source == StreamSource.Saavn && track?.isSaavn == false)
                             stringResource(Res.string.desktop_playing_from_saavn)
                         else track?.artists.orEmpty(),
                         style = MaterialTheme.typography.bodySmall,
-                        color = if (state.source == StreamSource.Saavn && track?.isSaavn == false) colors.primary else colors.onSurfaceVariant,
+                        color = if (state.waitingForNetwork || state.source == StreamSource.Saavn && track?.isSaavn == false) colors.primary else colors.onSurfaceVariant,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                         modifier = Modifier.clickable(enabled = track?.artistIds?.isNotEmpty() == true) {

@@ -49,6 +49,13 @@ fun PlayerSettings() = with(PlayerPreferences) {
                 onCheckedChange = { persistentQueue = it }
             )
 
+            if (persistentQueue) SwitchSettingsEntry(
+                title = stringResource(R.string.resume_on_open),
+                text = stringResource(R.string.resume_on_open_description),
+                isChecked = resumeOnOpen,
+                onCheckedChange = { resumeOnOpen = it }
+            )
+
             if (isAtLeastAndroid6) SwitchSettingsEntry(
                 title = stringResource(R.string.resume_playback),
                 text = stringResource(R.string.resume_playback_description),

@@ -1,5 +1,6 @@
 package com.k4music.android.ui.screens.player
 
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedContentTransitionScope.SlideDirection.Companion.Left
 import androidx.compose.animation.AnimatedContentTransitionScope.SlideDirection.Companion.Right
@@ -292,11 +293,13 @@ fun Thumbnail(
                     )
             )
 
+            val waiting by com.k4music.android.service.waitingForConnection.collectAsStateWithLifecycle()
             PlaybackError(
-                isDisplayed = error != null,
+                isDisplayed = error != null || waiting,
                 messageProvider = {
                     if (currentWindow.mediaItem.isLocal) stringResource(R.string.error_local_music_deleted)
                     else when {
+                        waiting || error?.findCause<com.k4music.android.service.NoConnectionException>() != null -> stringResource(R.string.waiting_for_connection)
                         error?.findCause<UnresolvedAddressException>() != null || error?.findCause<UnknownHostException>() != null || error?.findCause<SocketTimeoutException>() != null || error?.errorCode == PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_FAILED -> stringResource(R.string.error_network)
                         error?.findCause<PlayableFormatNotFoundException>() != null || error?.findCause<UnplayableException>() != null -> stringResource(R.string.error_unplayable)
                         error?.findCause<LoginRequiredException>() != null || error?.findCause<RestrictedVideoException>() != null || error?.findCause<InvalidResponseCodeException>()?.responseCode in setOf(401, 403) -> stringResource(R.string.error_server_restrictions)

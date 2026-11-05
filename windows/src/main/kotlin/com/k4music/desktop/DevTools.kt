@@ -181,6 +181,65 @@ object DevTools {
         File(dir, "uitest.txt").writeText(report.toString())
     }
 
+    /**
+     * `--resumetest <dir>`, run three times in a row, each run a new app start:
+     * 1 plays, jumps to 1:00 and quits while playing; 2 must carry on by itself from that moment, then
+     * pauses and quits; 3 must stay paused but ready, and start the moment Play is pressed.
+     */
+    fun resumeTest(dir: File, player: PlayerController, tracks: List<Track>): Boolean = runBlocking {
+        dir.mkdirs()
+        val stepFile = File(dir, "resume-step.txt")
+        val expectedFile = File(dir, "resume-expected.txt")
+        val report = File(dir, "resumetest.txt")
+        val step = stepFile.takeIf { it.isFile }?.readText()?.trim()?.toIntOrNull() ?: 1
+        suspend fun until(limitMs: Long = 20_000, condition: () -> Boolean) = withTimeoutOrNull(limitMs) {
+            while (!condition()) kotlinx.coroutines.delay(20)
+            true
+        } == true
+        fun state() = player.state.value
+        fun position() = player.position.value
+        var ok = true
+        when (step) {
+            1 -> {
+                com.k4music.desktop.player.QueueStore.attach(player, windowShown = false)
+                player.play(tracks.take(2)).join()
+                ok = until { position() >= 1.0 }
+                player.seek(60.0)
+                ok = ok && until { position() >= 63.0 }
+                expectedFile.writeText("${state().current?.id} ${position()}")
+                report.writeText("step 1: quit while playing '${state().current?.title}' at ${"%.2f".format(position())}s\n")
+            }
+            2 -> {
+                val (id, at) = expectedFile.readText().split(' ').let { it[0] to it[1].toDouble() }
+                val opened = System.currentTimeMillis()
+                com.k4music.desktop.player.QueueStore.attach(player, windowShown = true)
+                ok = until { state().current?.id == id && state().playing && position() > at + 0.2 }
+                val line = "step 2: reopened: '${state().current?.title}' playing=${state().playing} at ${"%.2f".format(position())}s " +
+                    "(left at ${"%.2f".format(at)}s), sound after ${System.currentTimeMillis() - opened} ms"
+                report.appendText(line + "\n")
+                ok = ok && state().current?.id == id && position() in at..(at + 5)
+                player.pause().join()
+                kotlinx.coroutines.delay(300)
+                expectedFile.writeText("$id ${position()}")
+            }
+            else -> {
+                val (id, at) = expectedFile.readText().split(' ').let { it[0] to it[1].toDouble() }
+                com.k4music.desktop.player.QueueStore.attach(player, windowShown = true)
+                ok = until { state().current?.id == id && state().source != null && !state().buffering }
+                kotlinx.coroutines.delay(1_000)
+                val held = !state().playing && kotlin.math.abs(position() - at) < 0.5
+                val pressed = System.currentTimeMillis()
+                player.togglePlay().join()
+                val started = until { position() > at + 0.05 }
+                report.appendText("step 3: reopened paused: held=$held at ${"%.2f".format(position())}s (left at ${"%.2f".format(at)}s), Play to sound ${System.currentTimeMillis() - pressed} ms\n")
+                ok = ok && held && started
+            }
+        }
+        stepFile.writeText("${step + 1}")
+        report.appendText(if (ok) "step $step PASS\n" else "step $step FAIL\n")
+        ok
+    }
+
     /** Plays each [tracks] entry for a few seconds; passes when the position actually advances. */
     fun selftest(dir: File, player: PlayerController, tracks: List<Track>): Boolean = runBlocking {
         dir.mkdirs()

@@ -48,6 +48,8 @@ object PlayerPreferences : GlobalPreferencesHolder() {
     var pitch by pitchProperty
     var minimumSilence by long(2_000_000L)
     var persistentQueue by boolean(true)
+    var resumeOnOpen by boolean(true)
+    var wasPlaying by boolean(false)
     var smartFallback by boolean(true)
     var stopWhenClosed by boolean(false)
     var stopOnMinimumVolume by boolean(false)

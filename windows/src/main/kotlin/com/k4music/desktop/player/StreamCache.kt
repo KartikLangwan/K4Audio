@@ -21,6 +21,9 @@ import java.util.concurrent.TimeUnit
 /** YouTube throttles a request without a Range header, or for over 11 MiB, to about 40 KB/s (measured); smaller ones come at full speed. */
 internal const val PIECE_BYTES = 10L * 1024 * 1024
 
+/** The server refused a later piece of a stream, so this link is finished; a new one may still work. */
+internal class StreamRefusedException(code: Int) : java.io.IOException("HTTP $code")
+
 /** The first request of a stream: on YouTube, its first piece. */
 internal fun Request.Builder.firstPiece(url: String) = apply {
     if (url.contains("googlevideo.com")) header("Range", "bytes=0-${PIECE_BYTES - 1}")
@@ -51,7 +54,7 @@ internal suspend fun copyStream(http: OkHttpClient, request: Request, first: okh
         val before = written
         val range = "bytes=$written-${minOf(written + PIECE_BYTES, total) - 1}"
         http.newCall(request.newBuilder().header("Range", range).build()).useCancellable { response ->
-            check(response.isSuccessful) { "HTTP ${response.code}" }
+            if (!response.isSuccessful) throw StreamRefusedException(response.code)
             drain(response)
         }
         check(written > before) { "Stream ended at $written of $total bytes" }

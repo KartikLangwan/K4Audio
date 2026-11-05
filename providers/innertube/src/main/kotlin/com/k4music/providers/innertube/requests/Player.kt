@@ -16,6 +16,7 @@ import io.ktor.client.statement.bodyAsText
 import io.ktor.util.generateNonceSuspend
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.isActive
+import java.io.IOException
 
 private const val VISITOR_TTL_MS = 6 * 60 * 60 * 1000L
 private val VISITOR_DATA = Regex("\"(Cg[A-Za-z0-9_%-]{20,})\"")
@@ -24,9 +25,8 @@ private val VISITOR_DATA = Regex("\"(Cg[A-Za-z0-9_%-]{20,})\"")
 /** The whole-song client with a recent visitor id; without one YouTube answers "not a bot". Null when none can be had. */
 private suspend fun Innertube.wholeSongContext(): Context? {
     val id = visitor?.takeIf { System.currentTimeMillis() - it.second < VISITOR_TTL_MS }?.first
-        ?: runCatchingCancellable {
-            baseClient.get("https://www.youtube.com/sw.js_data") { timeout { requestTimeoutMillis = 3_000L } }.bodyAsText()
-        }?.getOrNull()?.let { VISITOR_DATA.find(it)?.groupValues?.get(1) }?.also { visitor = it to System.currentTimeMillis() }
+        ?: baseClient.get("https://www.youtube.com/sw.js_data") { timeout { requestTimeoutMillis = 3_000L } }.bodyAsText()
+            .let { VISITOR_DATA.find(it)?.groupValues?.get(1) }?.also { visitor = it to System.currentTimeMillis() }
         ?: return null
     return Context.DefaultVisionOS.copy(client = Context.DefaultVisionOS.client.copy(defaultVisitorData = id))
 }
@@ -36,11 +36,13 @@ private suspend fun Innertube.tryContexts(
     checkIsValid: Boolean,
     vararg contexts: Context
 ): PlayerResponse? {
+    var answered = false
+    var unreachable: Throwable? = null
     contexts.forEach { context ->
         if (!currentCoroutineContext().isActive) return null
 
         val cpn = generateNonceSuspend(16)
-        runCatchingCancellable {
+        val result = runCatchingCancellable {
             client.post(if (context.client.music) PLAYER_MUSIC else PLAYER) {
                 setBody(
                     body.copy(
@@ -60,8 +62,10 @@ private suspend fun Innertube.tryContexts(
                 // A refused visitor id must not stay for hours: the next song fetches another.
                 if (context.client.clientName == Context.WHOLE_SONG_CLIENT && it.playabilityStatus?.status == "LOGIN_REQUIRED") visitor = null
             }
-        }
-            ?.getOrNull()
+        } ?: return null
+        val failure = result.exceptionOrNull()
+        if (failure is IOException) unreachable = failure else answered = true
+        result.getOrNull()
             ?.takeIf { !checkIsValid || it.isValid }
             ?.let {
                 return it.copy(
@@ -71,6 +75,8 @@ private suspend fun Innertube.tryContexts(
             }
     }
 
+    // Nobody answered at all: that is about the connection, and says nothing about this song.
+    if (!answered) unreachable?.let { throw it }
     return null
 }
 
@@ -90,13 +96,18 @@ suspend fun Innertube.player(
         body,
         checkIsValid,
         *listOfNotNull(
-            wholeSongContext(),
+            runCatchingCancellable { wholeSongContext() }?.getOrNull(),
             Context.DefaultIOS,
             Context.DefaultWeb,
             Context.DefaultAndroidMusic,
             Context.DefaultTV
         ).toTypedArray()
     )
+}
+
+/** Fetches the visitor id ahead of time, so the first song does not have to wait for it. */
+suspend fun Innertube.warmUpWholeSong() {
+    runCatchingCancellable { wholeSongContext() }
 }
 
 /** Only the whole-song client, for callers with no use for a link that stops early. */

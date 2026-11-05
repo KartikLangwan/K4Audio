@@ -49,7 +49,9 @@ import androidx.media3.datasource.cache.SimpleCache
 import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.LoadControl
 import androidx.media3.exoplayer.analytics.AnalyticsListener
+import androidx.media3.exoplayer.analytics.PlayerId
 import androidx.media3.exoplayer.analytics.PlaybackStats
 import androidx.media3.exoplayer.analytics.PlaybackStatsListener
 import androidx.media3.exoplayer.audio.AudioSink
@@ -58,6 +60,8 @@ import androidx.media3.exoplayer.audio.DefaultAudioSink
 import androidx.media3.exoplayer.audio.DefaultAudioSink.DefaultAudioProcessorChain
 import androidx.media3.exoplayer.audio.SilenceSkippingAudioProcessor
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
+import androidx.media3.exoplayer.source.TrackGroupArray
+import androidx.media3.exoplayer.trackselection.ExoTrackSelection
 import androidx.media3.exoplayer.upstream.DefaultLoadErrorHandlingPolicy
 import androidx.media3.extractor.DefaultExtractorsFactory
 import com.k4music.android.Database
@@ -90,6 +94,7 @@ import com.k4music.android.utils.broadcastPendingIntent
 import com.k4music.android.utils.defaultDataSource
 import com.k4music.android.utils.findCause
 import com.k4music.android.utils.findNextMediaItemById
+import com.k4music.android.utils.isRecoverablePlaybackFailure
 import com.k4music.android.utils.forcePlayFromBeginning
 import com.k4music.android.utils.forceSeekToNext
 import com.k4music.android.utils.forceSeekToPrevious
@@ -133,6 +138,7 @@ import com.k4music.providers.innertube.models.bodies.SearchBody
 import com.k4music.providers.innertube.requests.isWholeSong
 import com.k4music.providers.innertube.requests.player
 import com.k4music.providers.innertube.requests.searchPage
+import com.k4music.providers.innertube.requests.warmUpWholeSong
 import com.k4music.providers.innertube.utils.from
 import com.k4music.providers.sponsorblock.SponsorBlock
 import com.k4music.providers.sponsorblock.models.Action
@@ -256,9 +262,18 @@ class PlayerService : InvincibleService(), Player.Listener, PlaybackStatsListene
     private val playbackFallbackBudget = PlaybackRetryBudget(limit = 1)
     private var budgetResetJob: Job? = null
     private var nextSongJob: Job? = null
-    private var nextSongId: String? = null
+    @Volatile private var nextSongId: String? = null
     private var positionSaveJob: Job? = null
     private var radioFetching = false
+    private var queueRestored = false
+    private var appOpened = false
+    private var noConnectionTries = 0
+    @Volatile private var metered = false
+    private val networkWatch = object : android.net.ConnectivityManager.NetworkCallback() {
+        override fun onCapabilitiesChanged(network: android.net.Network, capabilities: android.net.NetworkCapabilities) {
+            metered = !capabilities.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_NOT_METERED)
+        }
+    }
     private var lastMetadataDuration = C.TIME_UNSET
     private var lastMetadataItem: MediaItem? = null
 
@@ -324,6 +339,12 @@ class PlayerService : InvincibleService(), Player.Listener, PlaybackStatsListene
             context = this
         )
 
+        runCatching {
+            getSystemService<android.net.ConnectivityManager>()?.let {
+                metered = it.isActiveNetworkMetered
+                it.registerDefaultNetworkCallback(networkWatch)
+            }
+        }
         cache = createCache(this)
         player = ExoPlayer.Builder(this, createRendersFactory(), createMediaSourceFactory())
             .setHandleAudioBecomingNoisy(true)
@@ -384,6 +405,9 @@ class PlayerService : InvincibleService(), Player.Listener, PlaybackStatsListene
         }
 
         maybeResumePlaybackWhenDeviceConnected()
+
+        // Ready before the first song needs it. Python and yt-dlp are only the fallback, so they wait for first use.
+        coroutineScope.launch { Innertube.warmUpWholeSong() }
 
         preferenceUpdaterJob = coroutineScope.launch {
             fun <T : Any> subscribe(
@@ -469,6 +493,7 @@ class PlayerService : InvincibleService(), Player.Listener, PlaybackStatsListene
     }
 
     override fun onTaskRemoved(rootIntent: Intent?) {
+        maybeSavePlayerQueue()
         if (!player.shouldBePlaying || PlayerPreferences.stopWhenClosed) {
             broadcastPendingIntent<NotificationDismissReceiver>().send()
         }
@@ -476,6 +501,7 @@ class PlayerService : InvincibleService(), Player.Listener, PlaybackStatsListene
     }
 
     override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) {
+        PlayerPreferences.wasPlaying = playWhenReady
         // Covers every play entry point (UI, notification, headset, Android Auto) for a restored queue.
         if (playWhenReady && player.playbackState == Player.STATE_IDLE && player.mediaItemCount > 0) {
             resetPlaybackRecovery()
@@ -488,6 +514,8 @@ class PlayerService : InvincibleService(), Player.Listener, PlaybackStatsListene
         budgetResetJob?.cancel()
         positionSaveJob?.cancel()
         if (!isPlaying) return
+        noConnectionTries = 0
+        waitingForConnection.value = false
         // A song that has played on fine earned its retries back: a long song may meet several network drops.
         budgetResetJob = coroutineScope.launch(Dispatchers.Main) {
             delay(BUDGET_RESET_AFTER_MS)
@@ -518,27 +546,37 @@ class PlayerService : InvincibleService(), Player.Listener, PlaybackStatsListene
     private fun continueAfterQueueEnd() {
         val last = player.currentMediaItem ?: return
         if (radio == null) {
-            if (last.isLocal || isSaavnKey(last.mediaId)) return
+            if (last.isLocal || isSaavnKey(last.mediaId)) return rewindQueue()
             radio = YouTubeRadio(videoId = last.mediaId)
         }
         maybeProcessRadio()
     }
 
+    /** Nothing more to play: back to the first song, paused. */
+    private fun rewindQueue() {
+        player.pause()
+        val first = player.currentTimeline.getFirstWindowIndex(player.shuffleModeEnabled)
+        if (first != C.INDEX_UNSET) player.seekTo(first, 0)
+    }
+
     /**
      * Downloads the next song into the shared cache while this one plays: it starts at once from
      * disk, works if the network drops, and any part of it can be skipped to. Least recently played
-     * songs make room as the cache fills up.
+     * songs make room as the cache fills up. On mobile data only its first half minute: a skip is
+     * just as instant, and a song never reached costs next to nothing.
      */
     private fun maybeCacheNextSong() {
         val nextIndex = player.nextMediaItemIndex
         val next = nextIndex.takeIf { it != C.INDEX_UNSET }?.let(player::getMediaItemAt)
             ?.takeIf { it.mediaId != player.currentMediaItem?.mediaId } // repeat on a one-song queue
         val id = next?.mediaId
-        if (id == nextSongId && nextSongJob?.isActive == true) return
+        val length = if (metered) NEXT_SONG_START_BYTES else C.LENGTH_UNSET.toLong()
+        val wanted = "$id/$length"
+        if (wanted == nextSongId && (player.playWhenReady || nextSongJob?.isCompleted == true)) return // saved, or being saved
         nextSongJob?.cancel()
         nextSongId = null
-        if (next == null || next.isLocal || !player.playWhenReady || PlayerPreferences.pauseCache || onMeteredNetwork()) return
-        nextSongId = id
+        if (next == null || next.isLocal || !player.playWhenReady || PlayerPreferences.pauseCache) return
+        nextSongId = wanted
         val factory = nextSongFactory
         nextSongJob = coroutineScope.launch {
             delay(NEXT_SONG_DELAY_MS) // the song just started comes first
@@ -546,7 +584,7 @@ class PlayerService : InvincibleService(), Player.Listener, PlaybackStatsListene
                 runInterruptible {
                     val source = factory.createDataSource()
                     try {
-                        source.open(DataSpec.Builder().setUri(next.mediaId).setKey(next.mediaId).build())
+                        source.open(DataSpec.Builder().setUri(next.mediaId).setKey(next.mediaId).setLength(length).build())
                         val buffer = ByteArray(64 * 1024)
                         while (source.read(buffer, 0, buffer.size) != C.RESULT_END_OF_INPUT) {
                             if (Thread.interrupted()) throw InterruptedException()
@@ -556,7 +594,11 @@ class PlayerService : InvincibleService(), Player.Listener, PlaybackStatsListene
                         runCatching { source.close() }
                     }
                 }
-            }.onFailure { if (it !is kotlinx.coroutines.CancellationException && it !is InterruptedException) Log.w(TAG, "Could not cache next song $id", it) }
+            }.onFailure {
+                if (it is kotlinx.coroutines.CancellationException || it.findCause<InterruptedException>() != null || it is java.io.InterruptedIOException) return@onFailure
+                Log.w(TAG, "Could not cache next song $id: $it")
+                if (nextSongId == wanted) nextSongId = null // the next start of playback tries again
+            }
         }
     }
 
@@ -570,14 +612,12 @@ class PlayerService : InvincibleService(), Player.Listener, PlaybackStatsListene
         )
     }
 
-    /** A song that may be skipped is not worth mobile data; it still starts in under a second without this. */
-    private fun onMeteredNetwork() = getSystemService<android.net.ConnectivityManager>()?.isActiveNetworkMetered == true
-
     @Suppress("DEPRECATION")
     private fun online() = getSystemService<android.net.ConnectivityManager>()?.let { it.activeNetworkInfo?.isConnected == true } ?: true
 
     override fun onDestroy() {
         playbackRecoveryJob?.cancel()
+        runCatching { getSystemService<android.net.ConnectivityManager>()?.unregisterNetworkCallback(networkWatch) }
         runCatching {
             maybeSavePlayerQueue()
 
@@ -675,7 +715,10 @@ class PlayerService : InvincibleService(), Player.Listener, PlaybackStatsListene
 
         playbackRecoveryJob?.cancel()
         resetPlaybackRecovery()
+        noConnectionTries = 0
+        waitingForConnection.value = false
         mediaItemState.update { mediaItem }
+        maybeSavePlayerQueue() // the resume point must always name the song that is playing
         maybeCacheNextSong()
 
         maybeRecoverPlaybackError()
@@ -709,10 +752,26 @@ class PlayerService : InvincibleService(), Player.Listener, PlaybackStatsListene
         if (current.isLocal) return
         val id = current.mediaId
         val position = player.currentPosition.coerceAtLeast(0L)
-        // No connection is nobody's fault: spend no retries, and carry on by itself once it is back.
-        if (!online()) {
+        // A partly saved song came back as another file: start it again from the same moment, nothing is wrong with it.
+        if (error.findCause<androidx.media3.common.ParserException>()?.message?.startsWith(STREAM_CHANGED) == true && playbackRetryBudget.tryAcquire(id)) {
             playbackRecoveryJob?.cancel()
             playbackRecoveryJob = coroutineScope.launch(Dispatchers.Main) {
+                delay(RECOVERY_DELAY_MS)
+                if (player.currentMediaItem?.mediaId != id || player.playerError == null) return@launch
+                player.seekTo(position)
+                player.prepare()
+            }
+            return
+        }
+        // No connection is nobody's fault: spend no retries, and carry on by itself once it is back.
+        val noConnection = error.findCause<NoConnectionException>() != null
+        if (!online() || noConnection) {
+            waitingForConnection.value = true
+            val wait = NETWORK_POLL_MS shl noConnectionTries.coerceAtMost(2)
+            noConnectionTries++
+            playbackRecoveryJob?.cancel()
+            playbackRecoveryJob = coroutineScope.launch(Dispatchers.Main) {
+                delay(wait)
                 while (!online()) {
                     if (!player.playWhenReady || player.currentMediaItem?.mediaId != id) return@launch
                     delay(NETWORK_POLL_MS)
@@ -734,7 +793,8 @@ class PlayerService : InvincibleService(), Player.Listener, PlaybackStatsListene
         if (recovery == Recovery.None) return
         if (recovery == Recovery.Fallback) {
             Log.i(TAG, "Switching $id to the JioSaavn fallback after ${error.errorCodeName}")
-            StreamFallback.force(id)
+            // A dropped connection says nothing about the song: only a refusal may keep it on JioSaavn.
+            StreamFallback.force(id, pin = error.findCause<InvalidResponseCodeException>() != null || !isRecoverablePlaybackFailure(error.errorCode, null))
         }
 
         playbackRecoveryJob?.cancel()
@@ -784,7 +844,7 @@ class PlayerService : InvincibleService(), Player.Listener, PlaybackStatsListene
                             player.prepare()
                             player.playWhenReady = true
                         }
-                    }
+                    } else if (ended) rewindQueue()
                 } finally {
                     radioFetching = false
                 }
@@ -846,16 +906,27 @@ class PlayerService : InvincibleService(), Player.Listener, PlaybackStatsListene
                         /* startPositionMs = */
                         queue.getOrNull(index)?.position ?: C.TIME_UNSET
                     )
-                    // Not prepared here: resolving a stream at launch competes with the UI.
-                    // onPlayWhenReadyChanged prepares on the first play.
+                    queueRestored = true
+                    maybeResumeOnOpen()
 
                     runCatching {
-                        isNotificationStarted = true
                         startForeground()
+                        isNotificationStarted = true
                     }
                 }.onFailure { Log.w(TAG, "Failed to restore player queue on startup", it) }
             }
         }
+    }
+
+    /**
+     * The app was opened and the last queue is back. Music that was playing when the app closed carries
+     * on from that moment; a paused song gets ready, so Play is instant. Only for the app itself:
+     * Android Auto or a headset can start this service without anyone asking for sound.
+     */
+    private fun maybeResumeOnOpen() {
+        if (!appOpened || !queueRestored) return
+        queueRestored = false
+        if (PlayerPreferences.resumeOnOpen && PlayerPreferences.wasPlaying) player.play() else player.prepare()
     }
 
     private fun maybeNormalizeVolume() {
@@ -1102,11 +1173,9 @@ class PlayerService : InvincibleService(), Player.Listener, PlaybackStatsListene
     @Suppress("DEPRECATION")
     override fun onEvents(player: Player, events: Player.Events) {
         // Setting metadata rescales the cover on the main thread: only when something in it changed.
-        if (player.duration != C.TIME_UNSET && (
-                player.duration != lastMetadataDuration ||
-                    player.currentMediaItem !== lastMetadataItem ||
-                    events.contains(Player.EVENT_MEDIA_METADATA_CHANGED)
-                )
+        // A new song shows at once on the lock screen, even while its length is still unknown.
+        if (player.currentMediaItem !== lastMetadataItem || events.contains(Player.EVENT_MEDIA_METADATA_CHANGED) ||
+            (player.duration != C.TIME_UNSET && player.duration != lastMetadataDuration)
         ) {
             lastMetadataDuration = player.duration
             lastMetadataItem = player.currentMediaItem
@@ -1124,7 +1193,7 @@ class PlayerService : InvincibleService(), Player.Listener, PlaybackStatsListene
                         MediaMetadata.METADATA_KEY_ALBUM,
                         player.mediaMetadata.albumTitle?.toString().orEmpty()
                     )
-                    .putLong(MediaMetadata.METADATA_KEY_DURATION, player.duration)
+                    .putLong(MediaMetadata.METADATA_KEY_DURATION, player.duration.takeIf { it != C.TIME_UNSET } ?: -1L)
                     .build()
             )
         }
@@ -1262,12 +1331,32 @@ class PlayerService : InvincibleService(), Player.Listener, PlaybackStatsListene
      * Keeps most songs whole in memory, so a skip plays at once and a lost connection does not stop
      * them. What was played stays on disk, and anything further ahead is one fast request away.
      */
-    private fun createLoadControl() = DefaultLoadControl.Builder()
-        .setBufferDurationsMs(30_000, 300_000, 500, 1_500)
-        .setBackBuffer(60_000, true)
-        .setTargetBufferBytes(16 * 1024 * 1024)
-        .setPrioritizeTimeOverSizeThresholds(false)
-        .build()
+    private fun createLoadControl() = MobileDataLoadControl(
+        DefaultLoadControl.Builder()
+            .setBufferDurationsMs(30_000, 300_000, 500, 1_500)
+            .setBackBuffer(60_000, true)
+            .setTargetBufferBytes(16 * 1024 * 1024)
+            .setPrioritizeTimeOverSizeThresholds(false)
+            .build()
+    ) { metered }
+
+    /** On mobile data reads two minutes ahead at most, not five: a song that gets skipped costs less. */
+    private class MobileDataLoadControl(private val base: LoadControl, private val metered: () -> Boolean) : LoadControl by base {
+        private val rest = com.k4music.android.utils.MobileDataRest()
+
+        override fun shouldContinueLoading(parameters: LoadControl.Parameters) =
+            !rest.resting(metered(), parameters.bufferedDurationUs) && base.shouldContinueLoading(parameters)
+
+        // Kotlin's "by" skips Java default methods, and these defaults only throw.
+        override fun onPrepared(playerId: PlayerId) = base.onPrepared(playerId)
+        override fun onTracksSelected(parameters: LoadControl.Parameters, trackGroups: TrackGroupArray, trackSelections: Array<out ExoTrackSelection?>) =
+            base.onTracksSelected(parameters, trackGroups, trackSelections)
+        override fun onStopped(playerId: PlayerId) = base.onStopped(playerId)
+        override fun onReleased(playerId: PlayerId) = base.onReleased(playerId)
+        override fun getBackBufferDurationUs(playerId: PlayerId) = base.getBackBufferDurationUs(playerId)
+        override fun retainBackBufferFromKeyframe(playerId: PlayerId) = base.retainBackBufferFromKeyframe(playerId)
+        override fun shouldStartPlayback(parameters: LoadControl.Parameters) = base.shouldStartPlayback(parameters)
+    }
 
     private fun createMediaSourceFactory() = DefaultMediaSourceFactory(
         /* dataSourceFactory = */
@@ -1360,6 +1449,11 @@ class PlayerService : InvincibleService(), Player.Listener, PlaybackStatsListene
         val poiTimestamp get() = this@PlayerService.poiTimestamp
 
         fun setBitmapListener(listener: ((Bitmap?) -> Unit)?) = bitmapProvider.setListener(listener)
+
+        fun onAppOpened() {
+            appOpened = true
+            maybeResumeOnOpen()
+        }
 
         @kotlin.OptIn(FlowPreview::class)
         fun startSleepTimer(delayMillis: Long) {
@@ -1569,11 +1663,15 @@ class PlayerService : InvincibleService(), Player.Listener, PlaybackStatsListene
         private const val YT_DLP_TIMEOUT_MS = 20_000L
         /** A skip past the direct link waits this long per try; the run itself keeps going and is shared. */
         private const val YT_DLP_SEEK_WAIT_MS = 12_000L
-        private const val INNERTUBE_TIMEOUT_MS = 6_000L
+        private const val INNERTUBE_TIMEOUT_MS = 8_000L
+        private const val FALLBACK_LOOKUP_MS = 8_000L
+        private const val STREAM_CHANGED = "Stream changed mid-song"
+        /** About half a minute of audio: enough to start the next song at once on mobile data. */
+        private const val NEXT_SONG_START_BYTES = 512 * 1024L
         private const val BUDGET_RESET_AFTER_MS = 30_000L
-        private const val POSITION_SAVE_MS = 15_000L
+        private const val POSITION_SAVE_MS = 5_000L
         private const val NETWORK_POLL_MS = 2_000L
-        private const val NEXT_SONG_DELAY_MS = 5_000L
+        private const val NEXT_SONG_DELAY_MS = 3_000L
         /** yt-dlp was only slow, not refused: back to YouTube soon, not a day later. */
         private const val SLOW_YOUTUBE_PIN_MS = 60 * 60 * 1000L
         private const val STREAM_URL_TTL_MS = 3 * 60 * 60 * 1000L
@@ -1729,12 +1827,12 @@ class PlayerService : InvincibleService(), Player.Listener, PlaybackStatsListene
                 val durationText = item?.mediaMetadata?.extras?.songBundle?.durationText ?: song?.durationText
                 val url = title?.let {
                     runCatching {
-                        runBlocking(Dispatchers.IO) { findSaavnStream(
+                        runBlocking(Dispatchers.IO) { withTimeoutOrNull(FALLBACK_LOOKUP_MS) { findSaavnStream(
                                 it,
                                 artist,
                                 durationText?.let(::parseClockToMs)?.takeIf { ms -> ms > 0 },
                                 PlayerPreferences.audioQuality.saavn
-                            ) }
+                            ) } }
                     }.getOrNull()
                 }
                 if (url == null) {
@@ -1778,7 +1876,7 @@ class PlayerService : InvincibleService(), Player.Listener, PlaybackStatsListene
                 if (length == null || length <= 0 || length == cachedLength) return
                 if (cachedLength > 0) {
                     runCatching { cache.removeResource(mediaId) }
-                    if (dataSpec.position > 0) throw androidx.media3.common.ParserException.createForMalformedContainer("Stream changed mid-song", null)
+                    if (dataSpec.position > 0) throw androidx.media3.common.ParserException.createForMalformedContainer(STREAM_CHANGED, null)
                 }
                 val mutations = androidx.media3.datasource.cache.ContentMetadataMutations()
                 androidx.media3.datasource.cache.ContentMetadataMutations.setContentLength(mutations, length)
@@ -1893,12 +1991,31 @@ class PlayerService : InvincibleService(), Player.Listener, PlaybackStatsListene
 
                     // YouTube's first answer: metadata, and a link that starts the song at once.
                     // A stalled client must not hold the song back, yt-dlp can answer instead.
-                    val body = if (mediaId in rejectedDirectStreams) null else runBlocking(Dispatchers.IO) {
+                    val refused = mediaId in rejectedDirectStreams
+                    val answer = if (refused) null else runBlocking(Dispatchers.IO) {
                         withTimeoutOrNull(INNERTUBE_TIMEOUT_MS) {
                             com.k4music.android.utils.networkResult { Innertube.player(PlayerBody(videoId = mediaId)) }
                         }
-                    }?.getOrNull()
-                    val youtubeFormat = body?.streamingData?.audioFormat(PlayerPreferences.audioQuality.youtubeItags)
+                    }
+                    if (!refused && (answer == null || answer.exceptionOrNull() is IOException)) {
+                        // YouTube did not answer: nothing is known about this song. No yt-dlp (it would fail
+                        // the same way, after starting Python) and nothing pinned. A song just starting may
+                        // use JioSaavn for now; anything else waits for the connection.
+                        if (chunkLength != null) waitingForConnection.value = true
+                        if (chunkLength != null && fallbackOn && dataSpec.position == 0L) {
+                            StreamFallback.force(mediaId, pin = false)
+                            saavnFallback()?.let {
+                                waitingForConnection.value = false
+                                return@run it
+                            }
+                        }
+                        throw NoConnectionException()
+                    }
+                    if (chunkLength != null) waitingForConnection.value = false
+                    val body = answer?.getOrNull()
+                    // A partly saved song stays in the file it was saved from, whatever the quality setting says now.
+                    val youtubeFormat = body?.streamingData?.adaptiveFormats?.firstOrNull { cachedLength > 0 && it.contentLength == cachedLength && !it.url.isNullOrBlank() }
+                        ?: body?.streamingData?.audioFormat(PlayerPreferences.audioQuality.youtubeItags)
 
                     // A link that may stop early only helps start a song; downloads read past that straight away.
                     val wholeSong = body?.isWholeSong == true
@@ -1986,7 +2103,7 @@ class PlayerService : InvincibleService(), Player.Listener, PlaybackStatsListene
                 }
             }
         }.handleUnknownErrors { error, spec ->
-            Log.w(TAG, "Stream failed for ${spec?.key} at ${spec?.position}: $error")
+            if (error !is InterruptedException) Log.w(TAG, "Stream failed for ${spec?.key} at ${spec?.position}: $error")
             // Only an HTTP refusal proves a stream url bad; a dropped socket keeps it.
             val http = error.findCause<InvalidResponseCodeException>() ?: return@handleUnknownErrors
             val id = (http.dataSpec.key ?: spec?.key)?.removePrefix("https://youtube.com/watch?v=")
@@ -2006,7 +2123,7 @@ class PlayerService : InvincibleService(), Player.Listener, PlaybackStatsListene
         }.retryIf(maxRetries = 2) { error ->
             val status = error.findCause<InvalidResponseCodeException>()?.responseCode
             if (status != null) status in setOf(403, 408, 410, 429, 500, 502, 503, 504)
-            else error.findCause<IOException>() != null && error.findCause<java.io.FileNotFoundException>() == null && error.findCause<androidx.media3.common.ParserException>() == null && error.findCause<java.io.InterruptedIOException>()?.let { it !is java.net.SocketTimeoutException } != true
+            else error.findCause<NoConnectionException>() == null && error.findCause<IOException>() != null && error.findCause<java.io.FileNotFoundException>() == null && error.findCause<androidx.media3.common.ParserException>() == null && error.findCause<java.io.InterruptedIOException>()?.let { it !is java.net.SocketTimeoutException } != true
         }
             return SeamlessDataSourceFactory(resolving) { key ->
                 key?.let { androidx.media3.datasource.cache.ContentMetadata.getContentLength(cache.getContentMetadata(it)) } ?: C.LENGTH_UNSET.toLong()

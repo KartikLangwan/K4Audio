@@ -61,6 +61,7 @@ import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.painterResource
+import androidx.compose.runtime.collectAsState
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -579,8 +580,10 @@ private fun MiniPlayer(
                     Box(Modifier.size(6.dp).clip(CircleShape).background(palette.background2))
                 }
 
+                val waiting by com.k4music.android.service.waitingForConnection.collectAsState()
                 AnimatedContent(
-                    targetState = metadata.title?.toString().orEmpty() to metadata.artist?.toString().orEmpty(),
+                    targetState = metadata.title?.toString().orEmpty() to
+                        if (waiting) stringResource(R.string.waiting_for_connection) else metadata.artist?.toString().orEmpty(),
                     transitionSpec = { fadeIn() togetherWith fadeOut() },
                     label = "mini player text",
                     modifier = Modifier

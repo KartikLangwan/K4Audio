@@ -129,7 +129,9 @@ object Updater {
             "if (\$s.Status -eq 'HashMismatch' -or -not \$s.SignerCertificate) { '' } else { \$s.SignerCertificate.Thumbprint }"
         return com.k4music.desktop.data.Maintenance.runTool(
             listOf("powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script), 30
-        ).lines().lastOrNull { it.isNotBlank() }?.trim()
+        ).lines().map { it.trim() }.lastOrNull { it.isNotBlank() }
+            // Only a thumbprint counts: a warning or banner line from PowerShell must never pass as a signer.
+            ?.takeIf { it.matches(Regex("[0-9A-Fa-f]{40}")) }
     }
 
     /** The signer of the installed app's own launcher; null in dev runs or when it is unsigned. */

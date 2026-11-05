@@ -35,6 +35,7 @@ import com.k4music.android.Database
 import com.k4music.android.LocalPlayerServiceBinder
 import com.k4music.app.R
 import com.k4music.android.models.Format
+import com.k4music.android.service.DownloadPins
 import com.k4music.android.service.LOCAL_KEY_PREFIX
 import com.k4music.android.service.PlayerService
 import com.k4music.android.service.PrecacheService
@@ -83,7 +84,7 @@ fun PlaylistDownloadIcon(
             }
 
             !songs.map { it.mediaId }.fastAll {
-                isCached(
+                isDownloaded(
                     mediaId = it,
                     key = isDownloading
                 )
@@ -100,6 +101,14 @@ fun PlaylistDownloadIcon(
         }
     }
 }
+
+/**
+ * Kept for good. A song that was only played sits in the same cache until newer ones push it out,
+ * so being cached says nothing about whether the listener still has to ask for a download.
+ */
+@Composable
+fun isDownloaded(mediaId: String, key: Any? = Unit) =
+    isCached(mediaId, key) && (mediaId.startsWith(LOCAL_KEY_PREFIX) || DownloadPins.contains(mediaId))
 
 @OptIn(UnstableApi::class)
 @Composable

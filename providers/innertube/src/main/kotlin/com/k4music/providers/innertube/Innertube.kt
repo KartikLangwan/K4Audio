@@ -13,8 +13,6 @@ import io.ktor.client.plugins.compression.ContentEncoding
 import io.ktor.client.plugins.compression.brotli
 import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.client.plugins.defaultRequest
-import io.ktor.client.plugins.logging.LogLevel
-import io.ktor.client.plugins.logging.Logging
 import io.ktor.client.request.HttpRequestBuilder
 import io.ktor.client.request.HttpSendPipeline
 import io.ktor.client.request.header
@@ -26,8 +24,6 @@ import io.ktor.http.parameters
 import io.ktor.serialization.kotlinx.json.json
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
-import org.slf4j.Logger
-import org.slf4j.LoggerFactory
 import io.ktor.client.plugins.HttpRequestRetry
 import io.ktor.client.plugins.HttpTimeout
 import java.io.IOException
@@ -52,7 +48,6 @@ object Innertube {
         }
     }
 
-    val logger: Logger = LoggerFactory.getLogger(Innertube::class.java)
     val baseClient = HttpClient(OkHttp) {
         expectSuccess = true
 
@@ -86,10 +81,6 @@ object Innertube {
             brotli(1.0f)
             gzip(0.9f)
             deflate(0.8f)
-        }
-
-        install(Logging) {
-            level = LogLevel.INFO
         }
 
         install(OriginInterceptor)

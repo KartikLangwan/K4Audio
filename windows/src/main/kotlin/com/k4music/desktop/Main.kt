@@ -142,8 +142,6 @@ fun main(args: Array<String>) {
             Thread.sleep(6 * 60 * 60 * 1000L)
         }
     }, "k4-housekeeping").apply { isDaemon = true }.start()
-    // Warm yt-dlp once (Windows scans a program on its first launch), so the first song starts faster.
-    Thread({ Thread.sleep(5_000); com.k4music.desktop.data.Maintenance.ytDlpVersion() }, "k4-warmup").apply { isDaemon = true }.start()
     openLink = { Links.open(it, navigator, player) }
     args.forEach { openLink(it) }
 
@@ -386,7 +384,16 @@ private fun devMode(args: Array<String>, player: PlayerController) {
         // Downloads every sample song and plays the saved files back from disk.
         dltest.mkdirs()
         val report = StringBuilder()
-        for (track in sample) {
+        // A song saved ahead as the next one: its download starts from that copy.
+        sample.getOrNull(1)?.let { saved ->
+            player.play(sample.take(2))
+            val cached = kotlinx.coroutines.runBlocking {
+                kotlinx.coroutines.withTimeoutOrNull(60_000) { while (com.k4music.desktop.player.StreamCache.find(saved.id) == null) kotlinx.coroutines.delay(200); true } == true
+            }
+            report.appendLine("${saved.title}: in stream cache before downloading=$cached")
+        }
+        val longTrack = com.k4music.desktop.player.Track(id = "1N8hOpMqvYs", title = "A long mix")
+        for (track in sample + longTrack) {
             com.k4music.desktop.player.Downloads.download(track)
             val ok = kotlinx.coroutines.runBlocking {
                 kotlinx.coroutines.withTimeoutOrNull(120_000) {

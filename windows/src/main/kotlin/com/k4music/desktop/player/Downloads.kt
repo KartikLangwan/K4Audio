@@ -164,11 +164,20 @@ object Downloads {
         _transfers.update { it + (track.id to Transfer(track, Phase.Resolving)) }
         Db.library.insert(track)
         val stream = resolver.resolve(track, patient = true)
+        // Heard it already: the copy saved while listening is the song, no need to fetch it again.
+        File(stream.url).takeIf { it.isFile }?.let { saved ->
+            val part = File.createTempFile("${safeName(track.id)}-", ".part", dir)
+            try {
+                saved.copyTo(part, overwrite = true)
+                publish(track, part, audioExtension(part))
+            } finally {
+                part.delete()
+            }
+            return
+        }
         val request = Request.Builder().url(stream.url).apply {
             stream.headers.forEach { (k, v) -> header(k, v) }
-            // YouTube throttles a request without a Range header to ~30 KB/s; an open range comes at
-            // full speed (measured: 31 KB/s vs 14.8 MB/s).
-            if (stream.url.contains("googlevideo.com")) header("Range", "bytes=0-")
+            firstPiece(stream.url)
         }.build()
         http.newCall(request).useCancellable { response ->
             if (!response.isSuccessful) {
@@ -185,51 +194,57 @@ object Downloads {
                 body.contentType()?.subtype?.contains("aac") == true -> "aac"
                 else -> "audio"
             }
-            val name = "${safeName(track.id)}.$extension"
             val part = File.createTempFile("${safeName(track.id)}-", ".part", dir)
-            val total = body.contentLength().takeIf { it > 0 }
+            val total = response.streamLength()
             _transfers.update { it + (track.id to Transfer(track, Phase.Downloading, total = total)) }
             try {
-                body.byteStream().use { input ->
-                    java.io.FileOutputStream(part).use { output ->
-                        val buffer = ByteArray(64 * 1024)
-                        var written = 0L
-                        var lastProgress = System.nanoTime() - 100_000_000
-                        while (true) {
-                            kotlin.coroutines.coroutineContext.ensureActive()
-                            val n = input.read(buffer)
-                            if (n < 0) break
-                            output.write(buffer, 0, n)
-                            written += n
-                            val now = System.nanoTime()
-                            if (now - lastProgress >= 100_000_000 || written == total) {
-                                lastProgress = now
-                                _transfers.update { it + (track.id to Transfer(track, Phase.Downloading, written, total)) }
-                                if (total != null) _progress.update { it + (track.id to (written.toFloat() / total).coerceIn(0f, 1f)) }
-                            }
+                java.io.FileOutputStream(part).use { output ->
+                    var lastProgress = System.nanoTime() - 100_000_000
+                    copyStream(http, request, response, output) { written ->
+                        val now = System.nanoTime()
+                        if (now - lastProgress >= 100_000_000 || written == total) {
+                            lastProgress = now
+                            _transfers.update { it + (track.id to Transfer(track, Phase.Downloading, written, total)) }
+                            if (total != null) _progress.update { it + (track.id to (written.toFloat() / total).coerceIn(0f, 1f)) }
                         }
-                        output.fd.sync()
                     }
+                    output.fd.sync()
                 }
                 check(part.length() > 0) { "Empty audio response" }
                 check(total == null || part.length() == total) { "Download was cut off (expected $total bytes, got ${part.length()})" }
-                val target = File(dir, name)
-                val context = kotlin.coroutines.coroutineContext
-                synchronized(this) {
-                    context.ensureActive()
-                    // Cancellation and commit share this lock, so deletion cannot be undone by a late commit.
-                    java.nio.file.Files.move(part.toPath(), target.toPath(), java.nio.file.StandardCopyOption.REPLACE_EXISTING)
-                    try { index.publish(track.id, name) } catch (error: Exception) {
-                        target.delete()
-                        throw error
-                    }
-                    _done.update { it + track.id }
-                }
-                AppLog.i("Downloads", "Downloaded ${track.id} (${target.length() / 1024} KB)")
+                publish(track, part, extension)
             } catch (e: Throwable) {
                 part.delete()
                 throw e
             }
+        }
+    }
+
+    /** Moves a finished [part] into place and lists it as downloaded. */
+    private suspend fun publish(track: Track, part: File, extension: String) {
+        val name = "${safeName(track.id)}.$extension"
+        val target = File(dir, name)
+        val context = kotlin.coroutines.coroutineContext
+        synchronized(this) {
+            context.ensureActive()
+            // Cancellation and commit share this lock, so deletion cannot be undone by a late commit.
+            java.nio.file.Files.move(part.toPath(), target.toPath(), java.nio.file.StandardCopyOption.REPLACE_EXISTING)
+            try { index.publish(track.id, name) } catch (error: Exception) {
+                target.delete()
+                throw error
+            }
+            _done.update { it + track.id }
+        }
+        AppLog.i("Downloads", "Downloaded ${track.id} (${target.length() / 1024} KB)")
+    }
+
+    /** A saved stream's name does not say what it holds; its first bytes do. */
+    internal fun audioExtension(file: File): String {
+        val head = file.inputStream().use { it.readNBytes(12) }
+        return when {
+            head.size >= 4 && head[0] == 0x1A.toByte() && head[1] == 0x45.toByte() && head[2] == 0xDF.toByte() && head[3] == 0xA3.toByte() -> "webm"
+            head.size >= 8 && String(head, 4, 4, Charsets.ISO_8859_1) == "ftyp" -> "m4a"
+            else -> "audio"
         }
     }
 

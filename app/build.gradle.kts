@@ -53,7 +53,7 @@ android {
         minSdk = 24
         targetSdk = 37
 
-        versionCode = System.getenv("ANDROID_VERSION_CODE")?.toIntOrNull() ?: 2142700
+        versionCode = System.getenv("ANDROID_VERSION_CODE")?.toIntOrNull() ?: 2142800
         versionName = project.version.toString()
 
         multiDexEnabled = true
@@ -260,10 +260,6 @@ dependencies {
 
     implementation(libs.room)
     ksp(libs.room.compiler)
-
-    implementation(libs.log4j)
-    implementation(libs.slf4j)
-    implementation(libs.logback)
 
     testImplementation(libs.junit)
     testImplementation("org.json:json:20250517") // the real org.json: the Android stub returns nothing in unit tests

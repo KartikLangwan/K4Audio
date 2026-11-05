@@ -76,6 +76,7 @@ import com.k4music.android.query
 import com.k4music.android.transaction
 import com.k4music.android.utils.ActionReceiver
 import com.k4music.android.utils.ConditionalCacheDataSourceFactory
+import com.k4music.android.utils.SeamlessDataSourceFactory
 import com.k4music.android.utils.DIRECT_STREAM_LIMIT
 import com.k4music.android.utils.directRangeLength
 import com.k4music.android.utils.GlyphInterface
@@ -129,6 +130,7 @@ import com.k4music.providers.innertube.Innertube
 import com.k4music.providers.innertube.models.NavigationEndpoint
 import com.k4music.providers.innertube.models.bodies.PlayerBody
 import com.k4music.providers.innertube.models.bodies.SearchBody
+import com.k4music.providers.innertube.requests.isWholeSong
 import com.k4music.providers.innertube.requests.player
 import com.k4music.providers.innertube.requests.searchPage
 import com.k4music.providers.innertube.utils.from
@@ -383,13 +385,6 @@ class PlayerService : InvincibleService(), Player.Listener, PlaybackStatsListene
 
         maybeResumePlaybackWhenDeviceConnected()
 
-        // Every YouTube song needs yt-dlp within its first minute, and a cold Python takes many seconds:
-        // start it just after launch so the first skip does not wait for it. Small phones start it on first use.
-        coroutineScope.launch {
-            delay(PYTHON_WARMUP_DELAY_MS)
-            if (getSystemService<android.app.ActivityManager>()?.isLowRamDevice != true) runCatching { Dependencies.warmUp() }
-        }
-
         preferenceUpdaterJob = coroutineScope.launch {
             fun <T : Any> subscribe(
                 prop: SharedPreferencesProperty<T>,
@@ -542,7 +537,7 @@ class PlayerService : InvincibleService(), Player.Listener, PlaybackStatsListene
         if (id == nextSongId && nextSongJob?.isActive == true) return
         nextSongJob?.cancel()
         nextSongId = null
-        if (next == null || next.isLocal || !player.playWhenReady || PlayerPreferences.pauseCache || dataSaverOn()) return
+        if (next == null || next.isLocal || !player.playWhenReady || PlayerPreferences.pauseCache || onMeteredNetwork()) return
         nextSongId = id
         val factory = nextSongFactory
         nextSongJob = coroutineScope.launch {
@@ -575,9 +570,8 @@ class PlayerService : InvincibleService(), Player.Listener, PlaybackStatsListene
         )
     }
 
-    private fun dataSaverOn() = android.os.Build.VERSION.SDK_INT >= 24 && getSystemService<android.net.ConnectivityManager>()?.let {
-        it.isActiveNetworkMetered && it.restrictBackgroundStatus == android.net.ConnectivityManager.RESTRICT_BACKGROUND_STATUS_ENABLED
-    } == true
+    /** A song that may be skipped is not worth mobile data; it still starts in under a second without this. */
+    private fun onMeteredNetwork() = getSystemService<android.net.ConnectivityManager>()?.isActiveNetworkMetered == true
 
     @Suppress("DEPRECATION")
     private fun online() = getSystemService<android.net.ConnectivityManager>()?.let { it.activeNetworkInfo?.isConnected == true } ?: true
@@ -1265,13 +1259,13 @@ class PlayerService : InvincibleService(), Player.Listener, PlaybackStatsListene
     }
 
     /**
-     * Keeps the whole song (up to 10 minutes) in memory, ahead of and behind the listener, so a skip
-     * to any part of it plays at once. Audio is compressed here: a song is only a few MB.
+     * Keeps most songs whole in memory, so a skip plays at once and a lost connection does not stop
+     * them. What was played stays on disk, and anything further ahead is one fast request away.
      */
     private fun createLoadControl() = DefaultLoadControl.Builder()
-        .setBufferDurationsMs(30_000, 600_000, 500, 1_500)
-        .setBackBuffer(600_000, true)
-        .setTargetBufferBytes(32 * 1024 * 1024)
+        .setBufferDurationsMs(30_000, 300_000, 500, 1_500)
+        .setBackBuffer(60_000, true)
+        .setTargetBufferBytes(16 * 1024 * 1024)
         .setPrioritizeTimeOverSizeThresholds(false)
         .build()
 
@@ -1571,6 +1565,7 @@ class PlayerService : InvincibleService(), Player.Listener, PlaybackStatsListene
     companion object {
         private const val DEFAULT_CACHE_DIRECTORY = "exoplayer"
         private const val DEFAULT_CHUNK_LENGTH = 512 * 1024L
+        private const val MAX_REQUEST_BYTES = 10 * 1024 * 1024L
         private const val YT_DLP_TIMEOUT_MS = 20_000L
         /** A skip past the direct link waits this long per try; the run itself keeps going and is shared. */
         private const val YT_DLP_SEEK_WAIT_MS = 12_000L
@@ -1579,7 +1574,6 @@ class PlayerService : InvincibleService(), Player.Listener, PlaybackStatsListene
         private const val POSITION_SAVE_MS = 15_000L
         private const val NETWORK_POLL_MS = 2_000L
         private const val NEXT_SONG_DELAY_MS = 5_000L
-        private const val PYTHON_WARMUP_DELAY_MS = 1_500L
         /** yt-dlp was only slow, not refused: back to YouTube soon, not a day later. */
         private const val SLOW_YOUTUBE_PIN_MS = 60 * 60 * 1000L
         private const val STREAM_URL_TTL_MS = 3 * 60 * 60 * 1000L
@@ -1691,7 +1685,7 @@ class PlayerService : InvincibleService(), Player.Listener, PlaybackStatsListene
             // Songs whose cached link is Innertube's direct one, which stops at DIRECT_STREAM_LIMIT.
             val limitedStreams = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
             val streamHeaders = java.util.concurrent.ConcurrentHashMap<String, Map<String, String>>()
-            return ResolvingDataSource.Factory(
+            val resolving = ResolvingDataSource.Factory(
             ConditionalCacheDataSourceFactory(
                 cacheDataSourceFactory = cache.readOnlyWhen { PlayerPreferences.pauseCache }.asDataSource.apply {
                     if (blockOnCache) setFlags(CacheDataSource.FLAG_IGNORE_CACHE_ON_ERROR or CacheDataSource.FLAG_BLOCK_ON_CACHE)
@@ -1707,24 +1701,18 @@ class PlayerService : InvincibleService(), Player.Listener, PlaybackStatsListene
                 .setHttpRequestHeaders(headers + httpRequestHeaders)
                 .build()
 
-            fun DataSpec.ranged(contentLength: Long?): DataSpec = if (chunkLength == null) {
-                // Downloads read a song in one request. YouTube throttles a request without a
-                // Range header to a trickle (~30 KB/s); an open-ended range comes at full speed.
-                if (length == C.LENGTH_UNSET.toLong() && uri.host?.endsWith("googlevideo.com") == true)
-                    withRequestHeaders(mapOf("Range" to "bytes=$position-"))
-                else this
-            } else if (contentLength == null && length == C.LENGTH_UNSET.toLong() && uri.host?.endsWith("googlevideo.com") == true) {
-                withRequestHeaders(mapOf("Range" to "bytes=$position-")) // no length known: an open range, never a throttled plain request
-            } else contentLength?.let {
-
-                val remaining = contentLength - dataSpec.position
-                if (remaining <= 0L) return@let null
-                val length = remaining.coerceAtMost(chunkLength).let { available ->
-                    if (dataSpec.length > 0L) available.coerceAtMost(dataSpec.length) else available
+            // YouTube throttles a request without a Range header, or for over 11 MiB, to about 40 KB/s
+            // (measured); anything smaller comes at full speed. SeamlessDataSourceFactory joins the pieces.
+            fun DataSpec.ranged(): DataSpec {
+                if (uri.host?.endsWith("googlevideo.com") != true) return this
+                val total = androidx.media3.datasource.cache.ContentMetadata.getContentLength(cache.getContentMetadata(mediaId))
+                val wanted = if (length != C.LENGTH_UNSET.toLong()) length else if (total > 0) total - position else C.LENGTH_UNSET.toLong()
+                return when {
+                    wanted > MAX_REQUEST_BYTES -> subrange(0L, MAX_REQUEST_BYTES)
+                    length == C.LENGTH_UNSET.toLong() -> withRequestHeaders(mapOf("Range" to "bytes=$position-"))
+                    else -> this
                 }
-                // Media3 generates the Range header from position/length; never shift the seek twice.
-                this.subrange(0L, length)
-            } ?: this
+            }
 
             // YouTube could not serve this song: play the same track from JioSaavn under the same
             // cache key. The old bytes are purged first so two sources never mix in one file.
@@ -1777,7 +1765,7 @@ class PlayerService : InvincibleService(), Player.Listener, PlaybackStatsListene
                     }
                 }
                 uriCache.push(key = mediaId, meta = fallbackLen, uri = url.toUri())
-                return dataSpec.withUri(url.toUri()).ranged(fallbackLen)
+                return dataSpec.withUri(url.toUri()).ranged()
             }
 
             val cachedLength = androidx.media3.datasource.cache.ContentMetadata.getContentLength(cache.getContentMetadata(mediaId))
@@ -1814,7 +1802,7 @@ class PlayerService : InvincibleService(), Player.Listener, PlaybackStatsListene
                 streamHeaders[mediaId] = info.httpHeaders
                 limitedStreams.remove(mediaId)
                 uriCache.push(key = mediaId, meta = length, uri = uri)
-                return dataSpec.withUri(uri).withRequestHeaders(info.httpHeaders).ranged(length)
+                return dataSpec.withUri(uri).withRequestHeaders(info.httpHeaders).ranged()
             }
 
             if (!fullyCached && StreamFallback.url(mediaId) != null &&
@@ -1863,13 +1851,13 @@ class PlayerService : InvincibleService(), Player.Listener, PlaybackStatsListene
                                 .subrange(0L, if (dataSpec.length > 0L) dataSpec.length.coerceAtMost(wanted) else wanted)
                         } else {
                             // yt-dlp could not help: the link itself decides. A refusal lands in onPlayerError's fallback.
-                            dataSpec.withUri(knownUri.uri).withRequestHeaders(streamHeaders[mediaId].orEmpty()).ranged(knownUri.meta)
+                            dataSpec.withUri(knownUri.uri).withRequestHeaders(streamHeaders[mediaId].orEmpty()).ranged()
                         }
                 } else knownUri?.let { cachedUri ->
                     dataSpec
                         .withUri(cachedUri.uri)
                         .withRequestHeaders(streamHeaders[mediaId].orEmpty())
-                        .ranged(cachedUri.meta)
+                        .ranged()
                 } ?: run {
                     if (isSaavnKey(mediaId)) {
                         // K4Audio: JioSaavn-backed item — resolve its CDN url once
@@ -1895,7 +1883,7 @@ class PlayerService : InvincibleService(), Player.Listener, PlaybackStatsListene
                             }
                         }
                         uriCache.push(key = mediaId, meta = saavnLen, uri = cdn.toUri())
-                        return@run dataSpec.withUri(cdn.toUri()).ranged(saavnLen)
+                        return@run dataSpec.withUri(cdn.toUri()).ranged()
                     }
 
                     StreamFallback.url(mediaId)?.let { saved ->
@@ -1912,9 +1900,10 @@ class PlayerService : InvincibleService(), Player.Listener, PlaybackStatsListene
                     }?.getOrNull()
                     val youtubeFormat = body?.streamingData?.audioFormat(PlayerPreferences.audioQuality.youtubeItags)
 
-                    // Downloads read past the direct link's limit straight away, so they skip it.
+                    // A link that may stop early only helps start a song; downloads read past that straight away.
+                    val wholeSong = body?.isWholeSong == true
                     val directUrl = youtubeFormat?.url?.takeIf {
-                        it.isNotBlank() && mediaId !in rejectedDirectStreams && chunkLength != null && dataSpec.position < DIRECT_STREAM_LIMIT
+                        it.isNotBlank() && mediaId !in rejectedDirectStreams && (wholeSong || (chunkLength != null && dataSpec.position < DIRECT_STREAM_LIMIT))
                     }
                     val uri: android.net.Uri
                     val formatId: String?
@@ -1926,9 +1915,11 @@ class PlayerService : InvincibleService(), Player.Listener, PlaybackStatsListene
                         formatId = youtubeFormat.itag.toString()
                         bitrate = youtubeFormat.bitrate
                         contentLength = youtubeFormat.contentLength
-                        // The link only serves the song's first minute: get the full one ready before it runs out.
-                        limitedStreams.add(mediaId)
-                        ytDlpRun(mediaId, ytDlpFormat(formatId))
+                        if (wholeSong) limitedStreams.remove(mediaId) else {
+                            // The link may stop within the song's first minute: get the full one ready before it does.
+                            limitedStreams.add(mediaId)
+                            ytDlpRun(mediaId, ytDlpFormat(formatId))
+                        }
                     } else {
                         val info = extract(null, if (chunkLength == null) YT_DLP_DOWNLOAD_TIMEOUT_MS else YT_DLP_TIMEOUT_MS)
                         val format = info?.formats?.firstOrNull { it.formatId == info.formatId }
@@ -1987,14 +1978,15 @@ class PlayerService : InvincibleService(), Player.Listener, PlaybackStatsListene
                     val spec = dataSpec
                         .withUri(uri)
                         .withRequestHeaders(streamHeaders[mediaId].orEmpty())
-                    if (directUrl != null) {
+                    if (directUrl != null && !wholeSong) {
                         val remaining = (contentLength ?: Long.MAX_VALUE) - dataSpec.position
                         val wanted = directRangeLength(dataSpec.position, remaining, chunkLength ?: DIRECT_STREAM_LIMIT)
                         spec.subrange(0L, if (dataSpec.length > 0L) dataSpec.length.coerceAtMost(wanted) else wanted)
-                    } else spec.ranged(contentLength)
+                    } else spec.ranged()
                 }
             }
         }.handleUnknownErrors { error, spec ->
+            Log.w(TAG, "Stream failed for ${spec?.key} at ${spec?.position}: $error")
             // Only an HTTP refusal proves a stream url bad; a dropped socket keeps it.
             val http = error.findCause<InvalidResponseCodeException>() ?: return@handleUnknownErrors
             val id = (http.dataSpec.key ?: spec?.key)?.removePrefix("https://youtube.com/watch?v=")
@@ -2016,6 +2008,9 @@ class PlayerService : InvincibleService(), Player.Listener, PlaybackStatsListene
             if (status != null) status in setOf(403, 408, 410, 429, 500, 502, 503, 504)
             else error.findCause<IOException>() != null && error.findCause<java.io.FileNotFoundException>() == null && error.findCause<androidx.media3.common.ParserException>() == null && error.findCause<java.io.InterruptedIOException>()?.let { it !is java.net.SocketTimeoutException } != true
         }
+            return SeamlessDataSourceFactory(resolving) { key ->
+                key?.let { androidx.media3.datasource.cache.ContentMetadata.getContentLength(cache.getContentMetadata(it)) } ?: C.LENGTH_UNSET.toLong()
+            }
         }
     }
 }

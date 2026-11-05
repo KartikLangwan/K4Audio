@@ -1,5 +1,6 @@
 package com.k4music.desktop
 
+import com.k4music.desktop.player.Downloads
 import com.k4music.desktop.player.StreamCache
 import java.nio.file.Files
 import kotlin.test.Test
@@ -18,6 +19,20 @@ class StreamCacheTest {
             assertEquals(true, running.exists())
         } finally {
             folder.deleteRecursively()
+        }
+    }
+
+    @Test fun `a saved stream gets its extension from its first bytes`() {
+        val file = Files.createTempFile("song", ".YtDlp").toFile()
+        try {
+            file.writeBytes(byteArrayOf(0x1A, 0x45, 0xDF.toByte(), 0xA3.toByte(), 1, 2))
+            assertEquals("webm", Downloads.audioExtension(file))
+            file.writeBytes(byteArrayOf(0, 0, 0, 28) + "ftypdash".toByteArray())
+            assertEquals("m4a", Downloads.audioExtension(file))
+            file.writeBytes(byteArrayOf(1, 2))
+            assertEquals("audio", Downloads.audioExtension(file))
+        } finally {
+            file.delete()
         }
     }
 }

@@ -171,6 +171,7 @@ object Settings : SettingsStore({ AppPaths.settings }) {
     var launchAtStartup by boolean(false)
     /** When yt-dlp was last brought up to date (ms); it is refreshed weekly. */
     var ytDlpCheckedAt by long(0L)
+    var ytDlpCheckedVersion by string("")
     var startMinimizedOnStartup by boolean(true)
 
     // Audio effects (mpv filter chain; same choices as Android's AudioScreen)

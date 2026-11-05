@@ -8,6 +8,9 @@ import com.k4music.desktop.k4.StreamFallback
 import com.k4music.desktop.k4.findSaavnStream
 import com.k4music.desktop.k4.resolveSaavnStream
 import com.k4music.desktop.prefs.Settings
+import com.k4music.providers.innertube.Innertube
+import com.k4music.providers.innertube.models.bodies.PlayerBody
+import com.k4music.providers.innertube.requests.wholeSongPlayer
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
@@ -31,11 +34,11 @@ data class Stream(val url: String, val source: StreamSource, val headers: Map<St
 class UnplayableException(message: String) : Exception(message)
 
 /**
- * Downloaded or cached file -> yt-dlp (30 s deadline) -> the same song on JioSaavn (Smart fallback) -> unplayable.
+ * Downloaded or cached file -> YouTube's whole-song link (under a second, no process) -> yt-dlp (30 s deadline)
+ * -> the same song on JioSaavn (Smart fallback) -> unplayable.
  * Resolved urls are kept per song for a few hours; one that gets refused is dropped at once.
  *
- * No direct Innertube url step (Android's first step): on PC those urls play the first
- * megabyte and are then refused (HTTP 403), which cut songs off half way.
+ * Only the whole-song client: other Innertube clients' links can be refused after the first part (HTTP 403).
  */
 class StreamResolver {
     private data class Cached(val stream: Stream, val at: Long)
@@ -43,12 +46,15 @@ class StreamResolver {
     fun forget(id: String) { cache.remove(id) }
     fun close() { background.cancel() }
 
+    private val directRefused = ConcurrentHashMap.newKeySet<String>()
+
     /** Saved files that would not play: this session goes online for them instead. */
     private val badFiles = ConcurrentHashMap.newKeySet<String>()
 
     /** The current [Stream] of [track] was refused; the next resolve picks the next source. */
     fun reject(track: Track, stream: Stream) {
         forget(track.id)
+        if (stream.source == StreamSource.YtDlp) directRefused.add(track.id) // yt-dlp's turn, with its other clients
         if (!track.isLocal && File(stream.url).isFile) {
             badFiles.add(stream.url)
             StreamCache.drop(track.id, File(stream.url))
@@ -87,6 +93,7 @@ class StreamResolver {
     }
 
     private var precacheJob: kotlinx.coroutines.Job? = null
+    private var precaching = emptyList<Track>()
 
     /**
      * Saves [tracks] to the disk cache one after the other (the song playing, then the next), replacing
@@ -94,6 +101,9 @@ class StreamResolver {
      */
     @Synchronized
     fun precache(tracks: List<Track>) {
+        // Every play and resume asks again: starting over would throw away what is saved so far.
+        if (tracks == precaching && precacheJob?.isActive == true) return
+        precaching = tracks
         precacheJob?.cancel()
         precacheJob = background.launch {
             kotlinx.coroutines.delay(PRECACHE_DELAY_MS) // the song just started comes first
@@ -141,7 +151,7 @@ class StreamResolver {
                 ?: throw UnplayableException("JioSaavn stream unavailable")
             pinned != null -> Stream(pinned, StreamSource.Saavn)
             else -> {
-                val youtube = when {
+                val youtube = wholeSongLink(track) ?: when {
                     youtubeBlocked() -> null // don't keep knocking while YouTube is blocking this network
                     fallbackOn && !patient -> youtubeOrQuickFallback(track)
                     else -> ytDlp(track.id)
@@ -156,6 +166,14 @@ class StreamResolver {
         }
         if (!stream.temporary) cache[track.id] = Cached(stream, System.currentTimeMillis())
         stream
+    }
+
+    /** YouTube's own whole-song link, when it gives one; everything else about the song goes on as before. */
+    private suspend fun wholeSongLink(track: Track): Stream? {
+        if (track.id in directRefused) return null
+        val answer = kotlinx.coroutines.withTimeoutOrNull(DIRECT_TIMEOUT_MS) { Innertube.wholeSongPlayer(PlayerBody(videoId = track.id)) }?.getOrNull()
+        val url = answer?.streamingData?.audioFormat(Settings.audioQuality.youtubeItags)?.url?.takeIf { it.isNotBlank() } ?: return null
+        return Stream(url, StreamSource.YtDlp)
     }
 
     /**
@@ -338,6 +356,7 @@ class StreamResolver {
         const val TAG = "StreamResolver"
         const val TTL_MS = 3 * 60 * 60 * 1000L
         const val PRECACHE_DELAY_MS = 3_000L
+        const val DIRECT_TIMEOUT_MS = 6_000L
         const val SLOW_YOUTUBE_MS = 7_000L
         const val YT_DLP_TIMEOUT_S = 30L // a cold start (unpack + JS challenge) can pass 15 s and was killed
         const val BLOCK_PAUSE_MS = 10 * 60 * 1000L

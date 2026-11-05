@@ -74,7 +74,7 @@ import com.k4music.android.utils.asMediaItem
 import com.k4music.android.utils.enqueue
 import com.k4music.android.utils.forcePlay
 import com.k4music.android.utils.formatAsDuration
-import com.k4music.android.utils.isCached
+import com.k4music.android.utils.isDownloaded
 import com.k4music.android.utils.launchYouTubeMusic
 import com.k4music.android.utils.shareMusic
 import com.k4music.android.k4.isSaavnKey
@@ -452,7 +452,7 @@ fun MediaItemMenu(
 
             if (!isLocal) {
                 val progress = downloadProgress.collectAsStateWithLifecycle().value[songId]
-                val downloaded = isCached(mediaItem.mediaId, key = progress != null)
+                val downloaded = isDownloaded(mediaItem.mediaId, key = progress != null)
                 val startDownload = {
                     onDismiss()
                     runCatching {

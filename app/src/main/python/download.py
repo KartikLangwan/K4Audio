@@ -6,7 +6,7 @@ import json
 # Measured 2026-11-05: these serve audio all the way through. android_vr's links are refused past the first
 # MiB and tv fails, so neither is listed; the slower pair is the last resort. The PC app uses the same set.
 _CLIENTS = (
-    {"youtube": {"player_client": ["visionos", "android_sdkless"]}},
+    {"youtube": {"player_client": ["visionos"]}},
     None,
     {"youtube": {"player_client": ["web_embedded", "mweb"]}},
 )

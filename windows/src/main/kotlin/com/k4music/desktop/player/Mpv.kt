@@ -144,7 +144,7 @@ class Mpv(private val libraryDir: java.io.File) : AutoCloseable {
             "ytdl" to "no", "terminal" to "no", "input-default-bindings" to "no",
             "idle" to "yes", "keep-open" to "no",
             // Reads the whole song ahead (a skip to anywhere plays at once) and keeps what was played.
-            "cache" to "yes", "demuxer-max-bytes" to "32MiB", "demuxer-max-back-bytes" to "32MiB", "cache-pause-wait" to "0.5",
+            "cache" to "yes", "demuxer-max-bytes" to "16MiB", "demuxer-max-back-bytes" to "16MiB", "cache-pause-wait" to "0.5",
             "network-timeout" to "15", "audio-client-name" to "K4 Audio",
             "volume-max" to "100", "gapless-audio" to "weak",
             // YouTube throttles one long download; ranged requests (as ExoPlayer makes) arrive at full speed.

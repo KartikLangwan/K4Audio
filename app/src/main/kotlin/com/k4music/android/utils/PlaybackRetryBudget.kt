@@ -20,8 +20,9 @@ internal class PlaybackRetryBudget(private val limit: Int = 2) {
 }
 
 /**
- * Innertube's direct links serve about the first MiB (a minute of audio) and refuse the rest
- * (HTTP 403, measured on the iOS client). Enough to start a song at once while yt-dlp gets the full link.
+ * Without a PO token, the iOS client's links serve about the first MiB at most, on many songs only the first
+ * request (HTTP 403 after, measured). Enough to start a song at once while yt-dlp gets the full link. This
+ * only matters when the whole-song client (see Innertube.player) has failed.
  */
 const val DIRECT_STREAM_LIMIT = 1024 * 1024L
 

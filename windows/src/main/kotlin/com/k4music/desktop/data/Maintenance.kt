@@ -217,9 +217,15 @@ object Maintenance {
 
     /** Weekly, and only when it worked: YouTube changes break old yt-dlp builds, and PC playback depends on it. */
     fun updateYtDlpIfDue() {
-        if (System.currentTimeMillis() - com.k4music.desktop.prefs.Settings.ytDlpCheckedAt < 7 * 24 * 60 * 60 * 1000L) return
+        val settings = com.k4music.desktop.prefs.Settings
+        val appVersion = com.k4music.desktop.Updater.currentVersion
+        // An app update puts the bundled yt-dlp back, so it may be older than the one replaced: check again at once.
+        if (settings.ytDlpCheckedVersion == appVersion && System.currentTimeMillis() - settings.ytDlpCheckedAt < 7 * 24 * 60 * 60 * 1000L) return
         runCatching { kotlinx.coroutines.runBlocking { updateYtDlp() } }
-            .onSuccess { com.k4music.desktop.prefs.Settings.ytDlpCheckedAt = System.currentTimeMillis() }
+            .onSuccess {
+                settings.ytDlpCheckedAt = System.currentTimeMillis()
+                settings.ytDlpCheckedVersion = appVersion
+            }
             .onFailure { AppLog.w("Maintenance", "yt-dlp update skipped: ${it.message}") }
     }
 

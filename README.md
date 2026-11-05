@@ -27,16 +27,25 @@ Downloads are in this repository's [**Releases**](https://github.com/KartikLangw
 | --- | --- | --- |
 | **File** | [K4Audio-v2.14.26-RELEASE.apk](https://github.com/KartikLangwan/K4Audio/releases/download/v2.14.26/K4Audio-v2.14.26-RELEASE.apk) | [K4Audio-Setup-2.14.26.exe](https://github.com/KartikLangwan/K4Audio/releases/download/v2.14.26/K4Audio-Setup-2.14.26.exe) |
 | **Requires** | Android 7.0+, 64-bit ARM (arm64-v8a) | Windows 10 / 11, 64-bit |
-| **Size** | 26.9 MB | 116.1 MB |
-| **SHA-256** | `301973D1E805677D6B8522B53B7C8DA9CD434674A952E9E3EB6C0D9A4367CDDB` | `557EEBEDFFC9FCC2794B16A4C8C98E55613BA0656D3F2E8B960A51F4351ED938` |
+| **Size** | 26.4 MB | 115.8 MB |
+| **SHA-256** | `21C01952FE8D3A311DDACCC113955A035E7443C2E9610890AA5B419CEAF069A3` | `6523D070620AA4F41600C3524DF19869FC111238CC8B38F994B991852A05041A` |
 
-2.14.26 installs over 2.12.14 and keeps your library, likes, downloads and history. Libraries backed up from 2.14.26 need 2.14.26 or newer to restore.
+2.14.26 installs over 2.12.14 and earlier 2.14.26 builds, and keeps your library, likes, downloads and history. If you already have 2.14.26, the app won't offer this build as an update because the number is the same: download it and install it over your current app. Libraries backed up from 2.14.26 need 2.14.26 or newer to restore.
 
 **Android:** open the APK on your phone and allow *Install unknown apps* for your browser when Android asks. Updating from a build signed with a different key? Uninstall that build first.
 
 **Windows:** run the installer (no admin rights needed). It isn't code-signed yet, so on *Windows protected your PC* click **More info → Run anyway**. Later updates: Settings → Check for updates → **Update now**, or run a newer installer; it closes K4 Audio, updates it and keeps your library.
 
 ## What's new in 2.14.26
+
+- **Songs start much faster:** about 1 second on PC and under 2 seconds on Android in testing. Most songs no longer wait for the YouTube helper.
+- **Skipping to any part of a song works:** playback picks up again in under a second, even right after a song starts. Songs no longer stop at about 0:30.
+- **Downloads finish in seconds,** including a song you have played or are playing right now.
+- **Long songs and mixes no longer crawl:** a 3-hour mix now seeks in under a second.
+- **Songs no longer end early:** fixed a rare bug that could cut a song short.
+- **Downloads shows only songs you downloaded,** and a song you have only played can now be downloaded properly.
+- **Lighter again:** about 40% less memory on Android, the next song is saved ahead only on Wi-Fi, and the PC no longer fetches a song twice.
+- **Shared YouTube links** now play similar songs after them instead of repeating one song.
 
 - **Much lighter on PC:** the app now uses about 270 MB of memory instead of 470 MB (software drawing, a small garbage collector and capped caches), and the phone app starts its YouTube helper only when a song needs it. Unused code and libraries were removed.
 - **Updates without hunting:** the PC app checks at start and offers the new installer (Settings has the same button); the phone shows a card on Home and a *Check for updates* button in Settings that opens the APK download.
@@ -59,7 +68,7 @@ Downloads are in this repository's [**Releases**](https://github.com/KartikLangw
 - **PC fixes:** a second launch brings the window back, Add to playlist → New playlist works, Esc closes menus first, the search box takes typing straight away, and yt-dlp keeps itself up to date every week.
 - **Phone → PC transfer:** the PC shows a QR code (Settings → Phone transfer), the phone scans it (Settings → Backup & restore → Send library to PC) and your likes and playlists go straight to the PC over your Wi-Fi, encrypted, with no server in between.
 
-Every fix and how it was verified: [AUDIT.md](docs/AUDIT.md) and [AUDIT-2026-10-24.md](docs/AUDIT-2026-10-24.md).
+Every fix and how it was verified: [AUDIT.md](docs/AUDIT.md), [AUDIT-2026-10-24.md](docs/AUDIT-2026-10-24.md) and [AUDIT-2026-11-05.md](docs/AUDIT-2026-11-05.md).
 
 ## Bring your music across
 

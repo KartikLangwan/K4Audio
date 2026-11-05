@@ -1,9 +1,6 @@
 package com.k4music.android.service
 
-import android.content.ComponentName
 import android.content.Context
-import android.content.ServiceConnection
-import android.os.IBinder
 import androidx.annotation.OptIn
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
@@ -11,7 +8,6 @@ import androidx.core.net.toUri
 import androidx.media3.common.MediaItem
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.cache.Cache
-import androidx.media3.datasource.cache.CacheSpan
 import androidx.media3.datasource.cache.ContentMetadataMutations
 import androidx.media3.exoplayer.offline.Download
 import androidx.media3.exoplayer.offline.DownloadManager
@@ -30,7 +26,6 @@ import com.k4music.android.utils.toast
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineName
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
@@ -38,7 +33,6 @@ import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.asCoroutineDispatcher
-import kotlinx.coroutines.async
 import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -47,12 +41,7 @@ import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.runBlocking
-import kotlinx.coroutines.suspendCancellableCoroutine
-import java.io.File
-import java.util.NavigableSet
 import java.util.concurrent.Executors
-import kotlin.coroutines.resume
 import kotlin.time.Duration.Companion.milliseconds
 import kotlinx.coroutines.CoroutineExceptionHandler
 import android.util.Log
@@ -101,29 +90,6 @@ class PrecacheService : DownloadService(
 
     private val notificationActionReceiver = NotificationActionReceiver()
 
-    private val waiters = java.util.concurrent.CopyOnWriteArrayList<() -> Unit>()
-
-    private fun wakeWaiters() {
-        val pending = waiters.toList()
-        waiters.clear()
-        pending.forEach { it() }
-    }
-
-    private val serviceConnection = object : ServiceConnection {
-        override fun onServiceConnected(name: ComponentName?, service: IBinder?) {
-            if (service !is PlayerService.Binder) return
-            bound = true
-            binder = service
-            wakeWaiters()
-        }
-
-        override fun onServiceDisconnected(name: ComponentName?) {
-            bound = false
-            binder = null
-            wakeWaiters()
-        }
-    }
-
     inner class NotificationActionReceiver : ActionReceiver("com.k4music.android.precache") {
         val cancel by action { context, _ ->
             runCatching {
@@ -141,11 +107,6 @@ class PrecacheService : DownloadService(
             }
         }
     }
-
-    @get:Synchronized
-    @set:Synchronized
-    private var bound = false
-    @Volatile private var binder: PlayerService.Binder? = null
 
     private var progressUpdaterJob: Job? = null
     private var progressTicker: Job? = null
@@ -176,26 +137,8 @@ class PrecacheService : DownloadService(
 
     @kotlin.OptIn(FlowPreview::class)
     override fun getDownloadManager(): DownloadManager {
-        runCatching {
-            if (bound) unbindService(serviceConnection)
-            bindService(intent<PlayerService>(), serviceConnection, BIND_AUTO_CREATE)
-        }.exceptionOrNull()?.let {
-            it.printStackTrace()
-            toast(getString(R.string.error_pre_cache))
-        }
-
-        val cache = BlockingDeferredCache {
-            suspendCancellableCoroutine { continuation ->
-                val waiter = { if (continuation.isActive) continuation.resume(Unit) }
-                waiters += waiter
-                // The service may have connected before this ran: nobody would wake us then.
-                if (binder != null && waiters.remove(waiter)) waiter()
-            }
-            binder?.cache ?: run {
-                toast(getString(R.string.error_pre_cache))
-                error("PlayerService failed to start, crashing...")
-            }
-        }
+        // A process singleton, shared with the player: a download never has to start the player service for it.
+        val cache = PlayerService.createCache(applicationContext)
 
         progressUpdaterJob?.cancel()
         progressUpdaterJob = coroutineScope.launch {
@@ -312,10 +255,6 @@ class PrecacheService : DownloadService(
     override fun onDestroy() {
         super.onDestroy()
 
-        runCatching {
-            if (bound) unbindService(serviceConnection)
-        }
-
         unregisterReceiver(notificationActionReceiver)
         mutableDownloadState.update { false }
         progressUpdaterJob?.cancel()
@@ -381,52 +320,4 @@ class PrecacheService : DownloadService(
             }
         }
     }
-}
-
-@Suppress("TooManyFunctions")
-@OptIn(UnstableApi::class)
-class BlockingDeferredCache(private val cache: Deferred<Cache>) : Cache {
-    constructor(init: suspend () -> Cache) : this(coroutineScope.async { init() })
-
-    private val resolvedCache by lazy { runBlocking { cache.await() } }
-
-    override fun getUid() = resolvedCache.uid
-    override fun release() = resolvedCache.release()
-    override fun addListener(key: String, listener: Cache.Listener): NavigableSet<CacheSpan> =
-        resolvedCache.addListener(key, listener)
-
-    override fun removeListener(key: String, listener: Cache.Listener) =
-        resolvedCache.removeListener(key, listener)
-
-    override fun getCachedSpans(key: String): NavigableSet<CacheSpan> =
-        resolvedCache.getCachedSpans(key)
-
-    override fun getKeys(): MutableSet<String> = resolvedCache.keys
-    override fun getCacheSpace() = resolvedCache.cacheSpace
-    override fun startReadWrite(key: String, position: Long, length: Long): CacheSpan =
-        resolvedCache.startReadWrite(key, position, length)
-
-    override fun startReadWriteNonBlocking(key: String, position: Long, length: Long) =
-        resolvedCache.startReadWriteNonBlocking(key, position, length)
-
-    override fun startFile(key: String, position: Long, length: Long): File =
-        resolvedCache.startFile(key, position, length)
-
-    override fun commitFile(file: File, length: Long) = resolvedCache.commitFile(file, length)
-    override fun releaseHoleSpan(holeSpan: CacheSpan) = resolvedCache.releaseHoleSpan(holeSpan)
-    override fun removeResource(key: String) = resolvedCache.removeResource(key)
-    override fun removeSpan(span: CacheSpan) = resolvedCache.removeSpan(span)
-    override fun isCached(key: String, position: Long, length: Long) =
-        resolvedCache.isCached(key, position, length)
-
-    override fun getCachedLength(key: String, position: Long, length: Long) =
-        resolvedCache.getCachedLength(key, position, length)
-
-    override fun getCachedBytes(key: String, position: Long, length: Long) =
-        resolvedCache.getCachedBytes(key, position, length)
-
-    override fun applyContentMetadataMutations(key: String, mutations: ContentMetadataMutations) =
-        resolvedCache.applyContentMetadataMutations(key, mutations)
-
-    override fun getContentMetadata(key: String) = resolvedCache.getContentMetadata(key)
 }

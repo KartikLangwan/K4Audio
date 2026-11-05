@@ -147,6 +147,24 @@ data class Context(
             )
         )
 
+        const val WHOLE_SONG_CLIENT = "VISIONOS"
+
+        /** Links from this client serve the whole song without a PO token; it needs a recent visitor id (see Player.kt). */
+        val DefaultVisionOS = Context(
+            client = Client(
+                clientId = 101,
+                clientName = WHOLE_SONG_CLIENT,
+                clientVersion = "1.02",
+                deviceMake = "Apple",
+                deviceModel = "RealityDevice17,1",
+                osName = "visionOS",
+                osVersion = "26.5.23O471",
+                userAgent = UserAgents.VISIONOS,
+                apiKey = "AIzaSyB-63vPrdThhKuerbB2N_l7Kwwcxj6yUAc",
+                music = false
+            )
+        )
+
         val DefaultAndroidMusic = Context(
             client = Client(
                 clientId = 21,
@@ -193,4 +211,5 @@ object UserAgents {
         "com.google.android.apps.youtube.music/7.27.52 (Linux; U; Android 11) gzip"
     const val IOS = "com.google.ios.youtube/20.03.02 (iPhone16,2; U; CPU iOS 18_2_1 like Mac OS X;)"
     const val TV = "Mozilla/5.0 (ChromiumStylePlatform) Cobalt/Version"
+    const val VISIONOS = "Mozilla/5.0 (Macintosh; Intel Mac OS X 15_7_3) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Safari/605.1.15"
 }

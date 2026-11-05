@@ -129,6 +129,7 @@ import com.k4music.core.ui.utils.isAtLeastAndroid13
 import com.k4music.core.ui.utils.isAtLeastAndroid17
 import com.k4music.core.ui.utils.songBundle
 import com.k4music.providers.innertube.Innertube
+import com.k4music.providers.innertube.models.NavigationEndpoint
 import com.k4music.providers.innertube.models.bodies.BrowseBody
 import com.k4music.providers.innertube.requests.playlistPage
 import com.k4music.providers.innertube.requests.song
@@ -617,7 +618,10 @@ fun handleUrl(
             }?.let { videoId ->
                 Innertube.song(videoId)?.getOrNull()?.let { song ->
                     withContext(Dispatchers.Main) {
+                        binder?.stopRadio()
                         binder?.player?.forcePlay(song.asMediaItem)
+                        // Like tapping a song: similar songs follow, instead of this one looping alone.
+                        binder?.setupRadio(NavigationEndpoint.Endpoint.Watch(videoId = videoId))
                     }
                 }
             }
@@ -727,8 +731,6 @@ object Dependencies {
         File(application.applicationInfo.nativeLibraryDir, "libqjs.so")
             .also { if (!it.canExecute()) it.setExecutable(true) }
     }
-
-    fun warmUp() { module }
 
     fun runDownload(id: String, format: String = "bestaudio/best"): String = module
         .callAttr("download", quickjsPath.absolutePath, id, format)

@@ -667,11 +667,14 @@ class PlayerController(private val mpv: Mpv, private val resolver: StreamResolve
         }
     }
 
-    /** Saves this song and the next one to disk while this one plays, so what comes next is instant. */
+    /**
+     * Saves the next song to disk while this one plays, so it starts at once. Not the song playing:
+     * mpv already holds it, and saving it too would fetch it twice.
+     */
     private fun prefetchNext() {
         val s = _state.value
         if (!s.playing) return
-        resolver.precache(listOfNotNull(s.current, s.queue.getOrNull(s.index + 1)))
+        resolver.precache(listOfNotNull(s.queue.getOrNull(s.index + 1)))
     }
 
     private fun changed() {

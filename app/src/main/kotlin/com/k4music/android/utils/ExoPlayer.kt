@@ -9,6 +9,7 @@ import androidx.media3.common.C
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.DataSource
+import androidx.media3.datasource.DataSourceException
 import androidx.media3.datasource.DataSpec
 import androidx.media3.datasource.TransferListener
 import android.net.Uri
@@ -20,6 +21,11 @@ import androidx.media3.datasource.cache.Cache
 import androidx.media3.datasource.cache.CacheDataSource
 import java.io.EOFException
 import java.io.IOException
+import java.util.concurrent.Executors
+import java.util.concurrent.ScheduledFuture
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.locks.ReentrantLock
+import kotlin.concurrent.withLock
 import kotlin.math.pow
 
 class CatchingDataSourceFactory(
@@ -59,6 +65,130 @@ fun DataSource.Factory.handleUnknownErrors(
     parent = this,
     onError = onError
 )
+
+/**
+ * Reads pieces of one file as one stream. The resolver may end a read early (a chunk from the cache, a link's
+ * edge) and an extractor must not take that for the end of the file: at an element boundary it ends the song there.
+ */
+internal class PieceReader(
+    private val totalLength: () -> Long,
+    private val readPiece: (ByteArray, Int, Int) -> Int,
+    /** Opens the piece at this position: its size, 0 at the end of the file, or unset when unknown. */
+    private val openPiece: (Long) -> Long
+) {
+    private var position = 0L
+    private var pieceLeft = 0L
+
+    fun start(position: Long, pieceLength: Long) {
+        this.position = position
+        pieceLeft = pieceLength
+    }
+
+    /** Carries on where the last read stopped, after the piece was closed. False at the end of the file. */
+    fun resume(): Boolean {
+        pieceLeft = openPiece(position)
+        return pieceLeft != 0L
+    }
+
+    fun read(buffer: ByteArray, offset: Int, length: Int): Int {
+        while (true) {
+            val read = readPiece(buffer, offset, length)
+            if (read != C.RESULT_END_OF_INPUT) {
+                position += read
+                if (pieceLeft > 0) pieceLeft -= read
+                return read
+            }
+            // A piece of unknown size ran to its source's real end; so did one that came up short.
+            if (pieceLeft != 0L) return C.RESULT_END_OF_INPUT
+            val total = totalLength()
+            if (total in 1..position) return C.RESULT_END_OF_INPUT
+            pieceLeft = openPiece(position)
+            if (pieceLeft == 0L) return C.RESULT_END_OF_INPUT
+        }
+    }
+}
+
+private const val IDLE_CLOSE_MS = 5_000L
+private val idleChecks by lazy {
+    Executors.newSingleThreadScheduledExecutor { task -> Thread(task, "datasource-idle").apply { isDaemon = true } }
+}
+
+class SeamlessDataSourceFactory(
+    private val parent: DataSource.Factory,
+    private val totalLength: (key: String?) -> Long
+) : DataSource.Factory {
+    inner class Source(private val parent: DataSource) : DataSource by parent {
+        private lateinit var spec: DataSpec
+        private val lock = ReentrantLock()
+        private var idleCheck: ScheduledFuture<*>? = null
+        private var closedForIdle = false
+        @Volatile private var lastUsed = 0L
+
+        /** Where this read ends: what was asked for, or the end of the file (not above 0 when unknown). */
+        private fun end() = if (spec.length != C.LENGTH_UNSET.toLong()) spec.position + spec.length else totalLength(spec.key)
+
+        private val reader = PieceReader(
+            totalLength = ::end,
+            readPiece = parent::read,
+            openPiece = { position ->
+                parent.close()
+                val rest = if (spec.length != C.LENGTH_UNSET.toLong()) end() - position else C.LENGTH_UNSET.toLong()
+                try {
+                    parent.open(spec.buildUpon().setPosition(position).setLength(rest).build())
+                } catch (error: IOException) {
+                    if (DataSourceException.isCausedByPositionOutOfRange(error)) 0L else throw error
+                }
+            }
+        )
+
+        /**
+         * The player stops reading once it has buffered enough, and may not read again for minutes. Meanwhile an
+         * open read would hold its connection and its cache lock, which keeps a download of the same song waiting.
+         */
+        private fun closeIfIdle() {
+            if (System.nanoTime() - lastUsed < TimeUnit.MILLISECONDS.toNanos(IDLE_CLOSE_MS) || !lock.tryLock()) return
+            try {
+                if (!closedForIdle) {
+                    closedForIdle = true
+                    runCatching { parent.close() }
+                }
+            } finally {
+                lock.unlock()
+            }
+        }
+
+        override fun open(dataSpec: DataSpec): Long = lock.withLock {
+            spec = dataSpec
+            closedForIdle = false
+            reader.start(dataSpec.position, parent.open(dataSpec))
+            lastUsed = System.nanoTime()
+            idleCheck?.cancel(false)
+            idleCheck = idleChecks.scheduleWithFixedDelay(::closeIfIdle, IDLE_CLOSE_MS, IDLE_CLOSE_MS, TimeUnit.MILLISECONDS)
+            val end = end()
+            if (end > 0) (end - dataSpec.position).coerceAtLeast(0L) else C.LENGTH_UNSET.toLong()
+        }
+
+        override fun read(buffer: ByteArray, offset: Int, length: Int): Int = lock.withLock {
+            lastUsed = System.nanoTime()
+            if (closedForIdle) {
+                closedForIdle = false
+                if (!reader.resume()) return@withLock C.RESULT_END_OF_INPUT
+            }
+            reader.read(buffer, offset, length).also { lastUsed = System.nanoTime() }
+        }
+
+        override fun close() = lock.withLock {
+            idleCheck?.cancel(false)
+            idleCheck = null
+            closedForIdle = false
+            parent.close()
+        }
+
+        override fun getResponseHeaders(): Map<String, List<String>> = parent.responseHeaders
+    }
+
+    override fun createDataSource() = Source(parent.createDataSource())
+}
 
 class FallbackDataSourceFactory(
     private val upstream: DataSource.Factory,

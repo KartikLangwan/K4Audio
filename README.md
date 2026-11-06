@@ -28,7 +28,7 @@ Downloads are in this repository's [**Releases**](https://github.com/KartikLangw
 | **File** | [K4Audio-v2.14.26-RELEASE.apk](https://github.com/KartikLangwan/K4Audio/releases/download/v2.14.26/K4Audio-v2.14.26-RELEASE.apk) | [K4Audio-Setup-2.14.26.exe](https://github.com/KartikLangwan/K4Audio/releases/download/v2.14.26/K4Audio-Setup-2.14.26.exe) |
 | **Requires** | Android 7.0+, 64-bit ARM (arm64-v8a) | Windows 10 / 11, 64-bit |
 | **Size** | 26.4 MB | 115.8 MB |
-| **SHA-256** | `DE6D51983929316BC22103BC0363674E4E5FE461A15E22506AF7AEEC2AC93056` | `4A79F6498D0D00F773689BB93AF2BEA5DD1DE41FE9B7E43F28C54DBC8D3EA5CC` |
+| **SHA-256** | `99A6426C7C224E14C57CA40F693339BD54E6CD14A585CB062356506B9E382177` | `0553E19EAD28612ED2A03C7F7E71D1B2EF96EF567BAA611CDF090E208D119FB7` |
 
 2.14.26 installs over 2.12.14 and earlier 2.14.26 builds, and keeps your library, likes, downloads and history. If you already have 2.14.26, the app won't offer this build as an update because the number is the same: download it and install it over your current app. Libraries backed up from 2.14.26 need 2.14.26 or newer to restore.
 
